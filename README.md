@@ -1,7 +1,9 @@
-forecasting_sales
+forecasting_bond_spreads
 ==============================
 
-Practice data science project with WMT data from Kaggle datasets
+Data science project with macroeconomics monthly data from Federal Reserve
+
+Predict next month's Moody's Baa Corporate Bond - Fed Funds Rate, a measure of credit stress/vol.
 
 Project Organization
 ------------

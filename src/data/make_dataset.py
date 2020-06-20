@@ -7,16 +7,18 @@ import seaborn as sns
 import matplotlib
 from matplotlib import pyplot as plt
 from cycler import cycler
+import datetime
 import io
+from functools import reduce
 import pandas as pd
 import numpy as np
 from pandas.plotting import register_matplotlib_converters
 
-BUCKET = 'forecast1301' # s3 bucket name
+BUCKET = 'macro-forecasting1301' # s3 bucket name
 
 class DatasetMaker():
 
-    '''Loads up train and test dataset stored in s3. Data from Kaggle.
+    '''Loads up train and test dataset stored in s3. Data from Federal Reserve.
     Performs initial data aggregation and exploratory visualizations.
 
     Also feature creation and saves copy of features locally and to s3.'''
@@ -28,31 +30,94 @@ class DatasetMaker():
         self.graphics_path = Path(__file__).resolve().parents[2].joinpath('reports').resolve().joinpath('figures').resolve()
 
     def get_data(self):
-        obj = self.s3_client.get_object(Bucket=BUCKET, Key='data/WMT_train.csv')
-        self.train_df = pd.read_csv(io.BytesIO(obj['Body'].read()))
-        obj = self.s3_client.get_object(Bucket=BUCKET, Key='data/WMT_test.csv')
-        self.test_df = pd.read_csv(io.BytesIO(obj['Body'].read()))
-        self.train_df['source'] = 'train'
-        self.test_df['source'] = 'test'
-        self.raw_df = pd.concat([self.train_df, self.test_df], axis=0, sort=True)
+
+        '''Reads in csv from s3'''
+        obj = self.s3_client.get_object(Bucket=BUCKET, Key='current.csv')
+        self.raw_df = pd.read_csv(io.BytesIO(obj['Body'].read()))
     
-    def explore_correlations(self):
-        corr = self.raw_df.corr()
+    def prelim_null_analysis(self):
 
-        f, ax = plt.subplots(figsize=(12, 11))
+        '''Removes older dates driving most of the nulls'''
+        # remove 1960's due to significant missing values
+        self.interim_df = self.raw_df.iloc[1:].iloc[:-1] # last row + transforms row
+        self.interim_df['sasdate'] = pd.to_datetime(self.interim_df['sasdate'], format="%m/%d/%Y")
+        self.interim_df = self.interim_df[self.interim_df.sasdate.dt.year >= 1970]
 
-        # Draw the heatmap with the mask and correct aspect ratio
-        sns.heatmap(corr, cmap=sns.diverging_palette(10, 220, n=9, as_cmap=True), vmax=.3, center=0,
-                    square=True, linewidths=.5, cbar_kws={"shrink": .5})
-        pth = str(Path(__file__).resolve().parents[2].joinpath('reports').resolve().joinpath('figures').resolve()) + '\\' + 'correlation_matrix.png'
-        f.savefig(pth)
+        print('Total obs: ', self.interim_df.shape[0])
+        null_counts =  pd.DataFrame(self.interim_df.isnull().sum(axis = 0))
+        null_counts.columns = ['null_count']
+        nulls = null_counts[null_counts.null_count > 0]
+        print(nulls)
 
-        f1, ax1 = plt.subplots(figsize=(10, 10))
-        a = self.raw_df[['CPI', 'Temperature', 'Fuel_Price', 'Unemployment', 'Weekly_Sales']]
-        pd.plotting.scatter_matrix(a, ax=ax1, marker='o',
-                                 hist_kwds={'bins': 20}, s=5, alpha=.8)
-        pth = str(Path(__file__).resolve().parents[2].joinpath('reports').resolve().joinpath('figures').resolve()) + '\\' + 'scatter_pairs_histograms.png'
-        f1.savefig(pth)
+        # will likely simply remove the 4 variables w/nulls, first visualizing raw + suggested transformed/stationary
+        # ensure numeric
+        self.interim_df.iloc[:, 1:].apply(pd.to_numeric)
+
+    def _plot_group_variables(self, indices, plot_title, png_title):
+
+        '''sub function for using within time series visualization function'''
+        df = self.transformed_df.iloc[:, [i-2 for i in indices]] # Appdx key is off by 3
+        # graph
+        x =self.transformed_df.sasdate
+        
+        fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
+
+        colormap = plt.get_cmap('coolwarm')
+        ax1.set_prop_cycle(cycler('color', [colormap(k) for k in np.linspace(0, 1, 10)]) +
+                   cycler('linestyle', ['-', ':', '-', ':', '-', '-', ':', '-', ':', '-']))
+
+        for col in df.columns:
+            ax1.plot(x, df[col], label=col)
+        
+        # Decorations
+        ax1.set_xlabel('Date', fontsize=20)
+        ax1.tick_params(axis='x', rotation=0, labelsize=12)
+        ax1.set_ylabel('Transformed Series Values', color='black', fontsize=20)
+        ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
+        ax1.grid(alpha=.4)
+
+        fig.tight_layout()
+        plt.legend()
+        plt.title(plot_title, fontsize=12, fontweight='bold')
+        plt.show()
+        
+        pth = Path(self.graphics_path, 'time_series_transformed_'+png_title).with_suffix('.png')
+        fig.savefig(pth)
+
+    def transform_stationary(self):
+
+        '''Uses suggested transformations to make time series stationary, see https://s3.amazonaws.com/files.fred.stlouisfed.org/fred-md/Appendix_Tables_Update.pdf'''
+        dfs = []
+        for transform_num in list(range(1, 8)):
+            dfs.append(self.interim_df[self.raw_df.columns[self.raw_df.iloc[0, :] == transform_num].tolist()])
+        dfs.append(self.interim_df.iloc[:, 0])
+
+        # ---------- apply transforms
+        df1_transform = dfs[0] # none 
+        
+        df2_transform = dfs[1].diff(axis=0, periods=1) # first difference
+
+        df4_transform = (dfs[3].apply(np.log10)) # log
+
+        df5_tmp = (dfs[4].apply(np.log10))
+        df5_transform = df5_tmp.diff(axis=0, periods=1) # first difference of log(xt)
+
+        df6_tmp = (dfs[5].apply(np.log10))
+        df6_tmp2 = df6_tmp.diff(axis=0, periods=1)
+        df6_transform = df6_tmp2.pow(2) # squared first difference of log(xt)
+
+        df7_transform = dfs[6].pct_change() # percentage change
+
+        frames= [df1_transform, df2_transform, df4_transform, df5_transform, df6_transform, df7_transform, dfs[7]] # no type 3 transforms in Appdx
+        self.transformed_df = reduce(lambda  left, right: left.join(right, how='outer'), frames)
+        self.transformed_df = self.transformed_df[[c for c in self.raw_df.columns]] # put back in original order for grouping plotting
+
+    def visualize_transformed_data(self):
+
+        # housing variables
+        housing_indx = list(range(50, 60)) # from Appdnx key
+        self._plot_group_variables(housing_indx, 'Housing Variables: Transformed Time Series', 'housing')
+
 
     def visualize_store_types(self):
         grouped_df = self.raw_df.groupby(['Date', 'Type', 'Store']).sum().reset_index() # adding up the Dept sales for each store / date, keeping Type along for the ride
@@ -130,25 +195,22 @@ class DatasetMaker():
         pth = Path(self.graphics_path, 'time_series_markdowns').with_suffix('.png')
         fig.savefig(pth)
 
-    def 
-
     def execute_dataprep(self):
         self.get_data()
+        self.prelim_null_analysis()
+        self.transform_stationary()
+        self.visualize_transformed_data()
         #self.explore_correlations()
-        #self.visualize_store_types()
-        #self.visualize_departments()
-        #self.visualize_markdowns()
-
 
 def main():
-    """ Runs data processing scripts to turn raw data from (../raw) into
+    """ Runs data processing scripts to turn raw data from s3 into
         cleaned data ready to be analyzed (saved in ../processed).
     """
     logger = logging.getLogger(__name__)
     logger.info('making final data set from raw data')
 
-    WMTData = DatasetMaker()
-    WMTData.execute_dataprep()
+    EconData = DatasetMaker()
+    EconData.execute_dataprep()
 
 
 if __name__ == '__main__':
