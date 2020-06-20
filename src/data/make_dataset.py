@@ -23,66 +23,37 @@ class DatasetMaker():
 
     Also feature creation and saves copy of features locally and to s3.'''
     
-    def __init__(self):
+    def __init__(self, logger):
+        self.logger = logger
         sns.set(style="white")
         register_matplotlib_converters()
         self.s3_client = boto3.client('s3')
         self.graphics_path = Path(__file__).resolve().parents[2].joinpath('reports').resolve().joinpath('figures').resolve()
+        self.data_path = Path(__file__).resolve().parents[2].joinpath('data').resolve().joinpath('processed').resolve()
 
     def get_data(self):
 
         '''Reads in csv from s3'''
         obj = self.s3_client.get_object(Bucket=BUCKET, Key='current.csv')
         self.raw_df = pd.read_csv(io.BytesIO(obj['Body'].read()))
+        self.logger.info('loaded data, now cleaning...')
     
     def prelim_null_analysis(self):
 
         '''Removes older dates driving most of the nulls'''
+        self.logger.info('now norming / transforming into stationary variables...')
         # remove 1960's due to significant missing values
         self.interim_df = self.raw_df.iloc[1:].iloc[:-1] # last row + transforms row
         self.interim_df['sasdate'] = pd.to_datetime(self.interim_df['sasdate'], format="%m/%d/%Y")
         self.interim_df = self.interim_df[self.interim_df.sasdate.dt.year >= 1970]
 
-        print('Total obs: ', self.interim_df.shape[0])
         null_counts =  pd.DataFrame(self.interim_df.isnull().sum(axis = 0))
         null_counts.columns = ['null_count']
         nulls = null_counts[null_counts.null_count > 0]
-        print(nulls)
+        #print(nulls)
 
-        # will likely simply remove the 4 variables w/nulls, first visualizing raw + suggested transformed/stationary
         # ensure numeric
         self.interim_df.iloc[:, 1:].apply(pd.to_numeric)
-
-    def _plot_group_variables(self, indices, plot_title, png_title):
-
-        '''sub function for using within time series visualization function'''
-        df = self.transformed_df.iloc[:, [i-2 for i in indices]] # Appdx key is off by 3
-        # graph
-        x =self.transformed_df.sasdate
-        
-        fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
-
-        colormap = plt.get_cmap('coolwarm')
-        ax1.set_prop_cycle(cycler('color', [colormap(k) for k in np.linspace(0, 1, 10)]) +
-                   cycler('linestyle', ['-', ':', '-', ':', '-', '-', ':', '-', ':', '-']))
-
-        for col in df.columns:
-            ax1.plot(x, df[col], label=col)
-        
-        # Decorations
-        ax1.set_xlabel('Date', fontsize=20)
-        ax1.tick_params(axis='x', rotation=0, labelsize=12)
-        ax1.set_ylabel('Transformed Series Values', color='black', fontsize=20)
-        ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
-        ax1.grid(alpha=.4)
-
-        fig.tight_layout()
-        plt.legend()
-        plt.title(plot_title, fontsize=12, fontweight='bold')
-        plt.show()
-        
-        pth = Path(self.graphics_path, 'time_series_transformed_'+png_title).with_suffix('.png')
-        fig.savefig(pth)
 
     def transform_stationary(self):
 
@@ -112,95 +83,131 @@ class DatasetMaker():
         self.transformed_df = reduce(lambda  left, right: left.join(right, how='outer'), frames)
         self.transformed_df = self.transformed_df[[c for c in self.raw_df.columns]] # put back in original order for grouping plotting
 
+    def _plot_group_variables(self, indices, plot_title, png_title):
+
+        '''sub function for using within time series visualization function'''
+        df = self.transformed_df.iloc[:, [i-2 for i in indices]] # Appdx key is off by 3
+        # graph
+        x =self.transformed_df.sasdate
+        
+        fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
+
+        colormap = plt.get_cmap('seismic')
+        ax1.set_prop_cycle(cycler('color', [colormap(k) for k in np.linspace(0, 1, 10)]) +
+                   cycler('linestyle', ['-', ':', '-', ':', '-', '-', ':', '-', ':', '-']))
+
+        for col in df.columns:
+            ax1.plot(x, df[col], label=col)
+        
+        # Decorations
+        ax1.set_xlabel('Date', fontsize=20)
+        ax1.tick_params(axis='x', rotation=0, labelsize=12)
+        ax1.set_ylabel('Transformed Series Values', color='black', fontsize=20)
+        ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
+        ax1.grid(alpha=.4)
+
+        fig.tight_layout()
+        plt.legend()
+        plt.title(plot_title, fontsize=12, fontweight='bold')
+        
+        pth = Path(self.graphics_path, 'time_series_transformed_'+png_title).with_suffix('.png')
+        fig.savefig(pth)
+
     def visualize_transformed_data(self):
 
+        '''Visualizations of select time series variables, by group/type'''
         # housing variables
-        housing_indx = list(range(50, 60)) # from Appdnx key
-        self._plot_group_variables(housing_indx, 'Housing Variables: Transformed Time Series', 'housing')
+        indx = list(range(50, 60)) # from Appdnx key
+        self._plot_group_variables(indx, 'Housing Variables: Transformed Time Series', 'housing')
 
+        indx = list(range(6, 21)) # from Appdnx key
+        self._plot_group_variables(indx, 'Output Variables: Transformed Time Series', 'output')
 
-    def visualize_store_types(self):
-        grouped_df = self.raw_df.groupby(['Date', 'Type', 'Store']).sum().reset_index() # adding up the Dept sales for each store / date, keeping Type along for the ride
-        grouped_df = grouped_df.groupby(['Date', 'Type']).mean().reset_index()[['Weekly_Sales', 'Type', 'Date']] # avg Total weekly sales across the stores by type / date
-        
-        # graph
-        pv = pd.pivot_table(grouped_df, index='Date', columns='Type', values='Weekly_Sales').reset_index()
-        x = pd.to_datetime(pv['Date']) 
-        y1 = pv['A']
-        y2 = pv['B']
-        y3 = pv['C']
+        indx = [3, 4, 5, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69] # from Appdnx key
+        self._plot_group_variables(indx, 'Consumption Variables: Transformed Time Series', 'consumption')
 
-        # Plot Line1 (Left Y Axis)
-        fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
-        ax1.plot(x, y1, color='gray', label='Type: A')
-        ax1.plot(x, y2, color='deepskyblue', label='Type: B', linestyle='--')
-        ax1.plot(x, y3, color='crimson', linestyle=':', label='Type: C')
+        indx = list(range(66, 69)) # from Appdnx key
+        self._plot_group_variables(indx, 'Money Variables: Transformed Time Series', 'money')
 
-        # Decorations
-        # ax1 (left Y axis)
-        ax1.set_xlabel('Date', fontsize=20)
-        ax1.tick_params(axis='x', rotation=0, labelsize=12)
-        ax1.set_ylabel('Average Weekly Total Store Sales', color='black', fontsize=20)
-        ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
-        ax1.grid(alpha=.4)
+        # note extreme outlier in nonborrowed reserves in '08 - considering excluding from final set
+        #indx = list(range(66, 74)) # from Appdnx key
+        #self._plot_group_variables(indx, 'Money Variables: Transformed Time Series', 'money')
 
-        fig.tight_layout()
-        plt.legend()
-        plt.title('Time Series Plot of Weekly Sales by Store Type', fontsize=12, fontweight='bold')
+        indx = list(range(80, 97)) # from Appdnx key
+        self._plot_group_variables(indx, 'Interest Rate Variables: Transformed Time Series', 'interestrates')
 
-        pth = Path(self.graphics_path, 'time_series_store_type').with_suffix('.png')
-        fig.savefig(pth)
+        indx = list(range(97, 102)) # from Appdnx key
+        self._plot_group_variables(indx, 'Exchange Rate Variables: Transformed Time Series', 'fxrates')
 
-    def visualize_departments(self):
-        df = self.raw_df.groupby(['Dept', 'Type']).mean().reset_index()[['Weekly_Sales', 'Dept', 'Type']] # adding up the sales for each dept / date
-        
-        # Draw Plot
-        f, ax = plt.subplots(1,1, figsize=(16,10), dpi= 80)
+        indx = list(range(23, 44)) # from Appdnx key
+        self._plot_group_variables(indx, 'Labor Variables: Transformed Time Series', 'labor')
 
-        sns.kdeplot(df.loc[df['Type'] == 'A', "Weekly_Sales"], shade=True, color="gray", label="Store Type=A", alpha=.7, ax=ax)
-        sns.kdeplot(df.loc[df['Type'] == 'B', "Weekly_Sales"], shade=True, color="crimson", label="Store Type=B", alpha=.7, ax=ax)
-        sns.kdeplot(df.loc[df['Type'] == 'C', "Weekly_Sales"], shade=True, color="dodgerblue", label="Store Type=C", alpha=.7, ax=ax)
+        indx = list(range(107, 121)) # from Appdnx key
+        self._plot_group_variables(indx, 'Price Variables: Transformed Time Series', 'prices')
 
-        # Decoration
-        plt.title('Distribution of Average Weekly Sales Across Departments (by Store Type)', fontsize=22)
-        plt.legend()
+    def explore_correlations(self):
 
-        pth = Path(self.graphics_path, 'kernel_density_plot_depts').with_suffix('.png')
+        '''Visualize correlations of post-transformed data'''
+        correl = self.transformed_df.iloc[1:,60:]
+        corr = correl.corr()
+        # generate a mask for the upper triangle
+        mask = np.zeros_like(corr, dtype=np.bool)
+        mask[np.triu_indices_from(mask)] = True
+
+        f, ax = plt.subplots(figsize=(17, 17))
+
+        # generate a custom diverging colormap
+        cmap = sns.diverging_palette(10, 220, as_cmap=True)
+
+        # Draw the heatmap with the mask and correct aspect ratio
+        sns.heatmap(corr, mask=mask, cmap=cmap, center=0, ax=ax,
+                    square=True, linewidths=.2, cbar_kws={"shrink": 0.5})
+        pth = Path(self.graphics_path, 'correlation_matrix_1').with_suffix('.png')
         f.savefig(pth)
+        self.logger.info('plotted and save figures in /reports/figures/')
 
-    def visualize_markdowns(self):
-        grouped_df = self.raw_df.groupby(['Date']).mean().reset_index()[['Date', 'MarkDown1', 'MarkDown2', 'MarkDown3', 'MarkDown4', 'MarkDown5']] # avg 5 markdown columns
-        
+    def plot_y_var(self):
+
+        '''plotting dependent variable visually post and pre-transform'''
+        df = self.transformed_df.copy()
         # graph
-        x = pd.to_datetime(grouped_df['Date'])
+        x =self.transformed_df.sasdate
         
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
-        ax1.set_prop_cycle(cycler('color', ['gray', 'crimson', 'dodgerblue', 'b', 'navy']) +
-                   cycler('linestyle', ['-', ':', '-', ':', '-']))
 
-        for col in grouped_df.columns[1:]:
-            ax1.plot(x, grouped_df[col], label=col)
+        ax1.fill_between(x, df['BAAFFM'], label='Baa-FF spread', alpha=0.4, color='dodgerblue')
         
         # Decorations
         ax1.set_xlabel('Date', fontsize=20)
         ax1.tick_params(axis='x', rotation=0, labelsize=12)
-        ax1.set_ylabel('Average Weekly MarkDown (excl. NULLs)', color='black', fontsize=20)
+        ax1.set_ylabel('Transformed Series Values', color='black', fontsize=20)
         ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
         ax1.grid(alpha=.4)
 
         fig.tight_layout()
         plt.legend()
-        plt.title('Time Series Plot of Weekly Avg. MarkDown Values', fontsize=12, fontweight='bold')
+        plt.title('Moody’s Baa Corporate Bond Minus FEDFUNDS', fontsize=12, fontweight='bold')
         
-        pth = Path(self.graphics_path, 'time_series_markdowns').with_suffix('.png')
+        pth = Path(self.graphics_path, 'dependent_var_time_series').with_suffix('.png')
         fig.savefig(pth)
+
+    def remove_null_outlier_cols(self):
+        '''Removes the columns with significant null values. Can also remove outlier series, nonborrowed reserves'''
+        self.logger.info('removing nulls and outliers, saving...')
+        to_remove = ['ACOGNO', 'S&P PE ratio', 'TWEXAFEGSMTHx', 'UMCSENTx'] # leaving reserves in for now
+
+        self.features_df = self.transformed_df.drop(to_remove, axis=1).iloc[1:, :]
+        pth = Path(self.data_path, 'features').with_suffix('.csv')
+        self.features_df.to_csv(pth)
 
     def execute_dataprep(self):
         self.get_data()
         self.prelim_null_analysis()
         self.transform_stationary()
         self.visualize_transformed_data()
-        #self.explore_correlations()
+        self.explore_correlations()
+        self.plot_y_var()
+        self.remove_null_outlier_cols()
 
 def main():
     """ Runs data processing scripts to turn raw data from s3 into
@@ -209,9 +216,8 @@ def main():
     logger = logging.getLogger(__name__)
     logger.info('making final data set from raw data')
 
-    EconData = DatasetMaker()
+    EconData = DatasetMaker(logger)
     EconData.execute_dataprep()
-
 
 if __name__ == '__main__':
     log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
