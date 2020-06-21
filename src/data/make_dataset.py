@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from pathlib import Path
+from io import StringIO
 import logging
 from dotenv import find_dotenv, load_dotenv
 import boto3
@@ -191,14 +192,21 @@ class DatasetMaker():
         pth = Path(self.graphics_path, 'dependent_var_time_series').with_suffix('.png')
         fig.savefig(pth)
 
-    def remove_null_outlier_cols(self):
-        '''Removes the columns with significant null values. Can also remove outlier series, nonborrowed reserves'''
+    def final_prep_and_save(self):
+        '''Removes the columns with significant null values. Can also remove outlier series, nonborrowed reserves.
+        Then saves copies.'''
         self.logger.info('removing nulls and outliers, saving...')
         to_remove = ['ACOGNO', 'S&P PE ratio', 'TWEXAFEGSMTHx', 'UMCSENTx'] # leaving reserves in for now
 
         self.features_df = self.transformed_df.drop(to_remove, axis=1).iloc[1:, :]
+
         pth = Path(self.data_path, 'features').with_suffix('.csv')
         self.features_df.to_csv(pth)
+        # upload to s3
+        csv_buffer = StringIO()
+        self.features_df.to_csv(csv_buffer)
+        s3_resource = boto3.resource('s3')
+        s3_resource.Object(BUCKET, 'features.csv').put(Body=csv_buffer.getvalue())
 
     def execute_dataprep(self):
         self.get_data()
@@ -207,7 +215,7 @@ class DatasetMaker():
         self.visualize_transformed_data()
         self.explore_correlations()
         self.plot_y_var()
-        self.remove_null_outlier_cols()
+        self.final_prep_and_save()
 
 def main():
     """ Runs data processing scripts to turn raw data from s3 into
