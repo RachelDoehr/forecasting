@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from pathlib import Path
+from sklearn.metrics import explained_variance_score, mean_squared_error
 from io import StringIO
 import logging
 from dotenv import find_dotenv, load_dotenv
@@ -35,7 +36,7 @@ class ClassicalModels():
     def get_data(self):
 
         '''Reads in csv from s3'''
-        obj = self.s3_client.get_object(Bucket=BUCKET, Key='current.csv')
+        obj = self.s3_client.get_object(Bucket=BUCKET, Key='features.csv')
         self.features_df = pd.read_csv(io.BytesIO(obj['Body'].read()))
         self.logger.info('loaded data...')
 
@@ -49,49 +50,74 @@ class ClassicalModels():
         pth = Path(self.data_path, 'test').with_suffix('.csv')
         self.test_df.to_csv(pth)
     
-    def train_sARIMA(self):
+    def train_SS_AR(self):
 
-        '''Trains sARIMA model as baseline, including walk forward validation and standardization'''
+        '''Trains state space SARIMAX model (specified as purely AR process, already integrated) as baseline, including walk forward validation and standardization'''
         # Setup forecasts
-        nforecasts = 3
         endog = self.train_val_df['BAAFFM']
         forecasts = {}
 
         # Get the number of initial training observations
         nobs = len(endog)
-        n_init_training = int(nobs * 0.6)
+        n_init_training = int(nobs * 0.8)
         scaler = StandardScaler()
 
         # Create model for initial training sample, fit parameters
         training_endog = endog.iloc[:n_init_training]
         training_endog_preprocessed = pd.DataFrame(scaler.fit_transform(training_endog.values.reshape(-1, 1)))
-        mod = sm.tsa.SARIMAX(training_endog_preprocessed, order=(1, 0, 0), trend='c') # 1 lag, already stationary
+        mod = sm.tsa.SARIMAX(training_endog_preprocessed, order=(3, 0, 0), trend='c') # 1 lag, already stationary
         res = mod.fit()
 
         # Save initial forecast
-        forecasts[training_endog.index[-1]] = res.forecast(steps=nforecasts)
+        forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
 
         # Step through the rest of the sample
         for t in range(n_init_training, nobs):
             # Update the results by appending the next observation
             endog_preprocessed = pd.DataFrame(scaler.fit_transform(endog.iloc[0:t+1].values.reshape(-1, 1))) # re fit
-            updated_endog = endog.iloc[t:t+1]
+            dates = pd.DataFrame(self.train_val_df.iloc[0:t+1, 1].values.reshape(-1, 1))
   
-            mod = sm.tsa.SARIMAX(endog_preprocessed, order=(1, 0, 0), trend='c') 
-            res = mod.fit() # re-fit
+            mod = sm.tsa.SARIMAX(endog_preprocessed, order=(3, 0, 0), trend='c') 
+            res = mod.fit(disp=0) # re-fit
 
-            # Save the new set of forecasts
-            forecasts[updated_endog.index[0]] = res.forecast(steps=nforecasts)
-
+            # Save the new set of forecasts, inverse the scaler
+            forecasts[self.train_val_df.iloc[t, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
+    
         # Combine all forecasts into a dataframe
-        forecasts = pd.concat(forecasts, axis=1)
+        forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
+        actuals = pd.concat([endog.tail(forecasts.shape[0]), dates.tail(forecasts.shape[0])], axis=1)
+        actuals.columns = ['t_actual', 'sasdate']
+        self.SS_AR_forecasts = pd.merge(forecasts, actuals, on='sasdate', how='inner')
 
-        print(forecasts.iloc[:5, :5])
+    def report_errors_SS_AR(self):
+        
+        '''Calculates and reports error metrics from baseline model'''
+        print('MSE: ', mean_squared_error(self.SS_AR_forecasts['t_actual'], self.SS_AR_forecasts['t_forecast']))
+        print('Explained variance: ', explained_variance_score(self.SS_AR_forecasts['t_actual'], self.SS_AR_forecasts['t_forecast']))
+
+        # Plot Line1 (Left Y Axis)
+        fig, ax1 = plt.subplots(1,1,figsize=(16,9), dpi= 80)
+        ax1.plot(self.SS_AR_forecasts['sasdate'], self.SS_AR_forecasts['t_actual'], color='gray', label='actual')
+        ax1.plot(self.SS_AR_forecasts['sasdate'], self.SS_AR_forecasts['t_forecast'], color='dodgerblue', label='forecast')
+
+        # Decorations
+        # ax1 (left Y axis)
+        ax1.set_xlabel('Date', fontsize=20)
+        ax1.tick_params(axis='x', rotation=0, labelsize=12)
+        ax1.set_ylabel('BAAFFM Spread', color='tab:red', fontsize=20)
+        ax1.tick_params(axis='y', rotation=0, labelcolor='tab:red' )
+        ax1.grid(alpha=.4)
+
+        fig.tight_layout()
+        plt.legend()
+        plt.show()
+        
 
     def execute_analysis(self):
         self.get_data()
         self.splice_test_data()
-        self.train_sARIMA()
+        self.train_SS_AR()
+        self.report_errors_SS_AR()
 
 def main():
     """ Runs training of classical models and hyperparameter tuning.
