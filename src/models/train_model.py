@@ -57,7 +57,7 @@ class ClassicalModels():
         self.error_metrics_AR = {}
         self.forecasts_AR = {}
 
-        for ll in range(1, 4):
+        for ll in range(1, 13):
 
             endog = self.train_val_df['BAAFFM']
             forecasts = {}
@@ -131,7 +131,7 @@ class ClassicalModels():
         df_error = pd.DataFrame(self.error_metrics_AR.items())
         
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
-        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=3)
+        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=6)
         
         # Decorations
         ax1.set_xlabel('Lag', fontsize=20)
@@ -146,12 +146,66 @@ class ClassicalModels():
         pth = Path(self.graphics_path, 'AR_errors').with_suffix('.png')
         fig.savefig(pth)
 
+    def train_ss_DFM(self):
+    
+        '''Trains Dynamic Factor model, including walk forward validation and standardization.
+        Optimizes lag number & factor number by calculating RMSE on validation set during walk-forward training.'''
+        self.error_metrics_DFM = {}
+        self.forecasts_DFM = {}
+
+        for ll in range(1, 4):
+
+            endog = self.train_val_df.iloc[:, 1:]
+            forecasts = {}
+            
+            # Get the number of initial training observations
+            nobs = len(endog)
+            n_init_training = int(nobs * 0.8)
+            scaler = StandardScaler()
+
+            # Create model for initial training sample, fit parameters
+            training_endog = endog.iloc[:n_init_training, :]
+            training_endog_preprocessed = pd.DataFrame(scaler.fit_transform(training_endog.values))
+            mod = sm.tsa.DynamicFactor(training_endog_preprocessed, k_factors=5, factor_order=ll) ######## CHECK IF YOU NEED ERROR ORDER TOO
+            
+            initial_res = mod.fit(method='powell', disp=False)
+            res = mod.fit(initial_res.params, disp=False)
+            '''
+            # Save initial forecast
+            forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
+
+            # Step through the rest of the sample
+            for t in range(n_init_training, nobs):
+                # Update the results by appending the next observation
+                endog_preprocessed = pd.DataFrame(scaler.fit_transform(endog.iloc[0:t+1, :].values)) # re fit
+                dates = pd.DataFrame(self.train_val_df.iloc[0:t+1, 1].values.reshape(-1, 1))
+    
+                mod = sm.tsa.SARIMAX(endog_preprocessed, order=(ll, 0, 0), trend='c') 
+                res = mod.fit(disp=0) # re-fit
+
+                # Save the new set of forecasts, inverse the scaler
+                forecasts[self.train_val_df.iloc[t, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
+        
+            # Combine all forecasts into a dataframe
+            forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
+            actuals = pd.concat([endog.tail(forecasts.shape[0]), dates.tail(forecasts.shape[0])], axis=1)
+            actuals.columns = ['t_actual', 'sasdate']
+            self.SS_AR_forecasts = pd.merge(forecasts, actuals, on='sasdate', how='inner')
+            self.SS_AR_forecasts['sasdate'] = pd.to_datetime(self.SS_AR_forecasts['sasdate'])
+            # error storage
+            self.error_metrics_AR[ll] = mean_squared_error(self.SS_AR_forecasts['t_actual'], self.SS_AR_forecasts['t_forecast'])
+            # forecast storage
+            self.forecasts_AR['lag_'+str(ll)] = {
+                'df': self.SS_AR_forecasts
+            }'''
+            self.logger.info('completed training for DFM model with order: '+str(ll)+' and XXX factors')
 
     def execute_analysis(self):
         self.get_data()
         self.splice_test_data()
-        self.train_ss_AR()
-        self.plot_forecasts_ss_AR(chosen_lag=1)
+        #self.train_ss_AR()
+        #self.plot_forecasts_ss_AR(chosen_lag=1)
+        self.train_ss_DFM()
 
 def main():
     """ Runs training of classical models and hyperparameter tuning.
