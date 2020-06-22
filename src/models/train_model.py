@@ -57,7 +57,7 @@ class ClassicalModels():
         self.error_metrics_AR = {}
         self.forecasts_AR = {}
 
-        for ll in range(1, 18):
+        for ll in range(1, 4):
 
             endog = self.train_val_df['BAAFFM']
             forecasts = {}
@@ -95,10 +95,7 @@ class ClassicalModels():
             self.SS_AR_forecasts = pd.merge(forecasts, actuals, on='sasdate', how='inner')
             self.SS_AR_forecasts['sasdate'] = pd.to_datetime(self.SS_AR_forecasts['sasdate'])
             # error storage
-            self.error_metrics_AR['lag_'+str(ll)] = {
-                'mse': mean_squared_error(self.SS_AR_forecasts['t_actual'], self.SS_AR_forecasts['t_forecast']),
-                'explained_variance_score': explained_variance_score(self.SS_AR_forecasts['t_actual'], self.SS_AR_forecasts['t_forecast'])
-            }
+            self.error_metrics_AR[ll] = mean_squared_error(self.SS_AR_forecasts['t_actual'], self.SS_AR_forecasts['t_forecast'])
             # forecast storage
             self.forecasts_AR['lag_'+str(ll)] = {
                 'df': self.SS_AR_forecasts
@@ -108,13 +105,13 @@ class ClassicalModels():
     def plot_forecasts_ss_AR(self, chosen_lag):
         
         '''Plots and reports forecatss / error metrics from baseline model'''
-        df = self.forecasts_AR['lag_'+str(chosen_lag)]
+        df = self.forecasts_AR['lag_'+str(chosen_lag)]['df']
 
         # Plot Line1 (Left Y Axis)
         fig, ax1 = plt.subplots(1,1,figsize=(16,9), dpi= 80)
         
-        ax1.plot(self.df['sasdate'], df['t_actual'], color='dodgerblue', label='actual')
-        ax1.plot(self.df['sasdate'], df['t_forecast'], color='navy', label='forecast', linestyle=":")
+        ax1.plot(df['sasdate'], df['t_actual'], color='dodgerblue', label='actual')
+        ax1.plot(df['sasdate'], df['t_forecast'], color='navy', label='forecast', linestyle=":")
 
         # Decorations
         # ax1 (left Y axis)
@@ -130,11 +127,31 @@ class ClassicalModels():
         pth = Path(self.graphics_path, 'yhat_y_AR').with_suffix('.png')
         fig.savefig(pth)
 
+        # MSE
+        df_error = pd.DataFrame(self.error_metrics_AR.items())
+        
+        fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
+        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=3)
+        
+        # Decorations
+        ax1.set_xlabel('Lag', fontsize=20)
+        ax1.tick_params(axis='x', rotation=0, labelsize=12)
+        ax1.set_ylabel('Validation Set RMSE', color='black', fontsize=20)
+        ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
+
+        fig.tight_layout()
+        plt.legend()
+        plt.title('Error Metrics: AR', fontsize=12, fontweight='bold')
+        
+        pth = Path(self.graphics_path, 'AR_errors').with_suffix('.png')
+        fig.savefig(pth)
+
+
     def execute_analysis(self):
         self.get_data()
         self.splice_test_data()
         self.train_ss_AR()
-        self.plot_forecasts_ss_AR(chosen_lag=6)
+        self.plot_forecasts_ss_AR(chosen_lag=1)
 
 def main():
     """ Runs training of classical models and hyperparameter tuning.
