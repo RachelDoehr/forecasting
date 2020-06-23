@@ -102,6 +102,76 @@ class ClassicalModels():
             }
             self.logger.info('completed training for AR baseline model with lag: '+str(ll))
 
+    def train_MarkovSwitch_AR(self):
+    
+        '''Trains Markov Switching autoregression on univariate series. Allows for time-varying transition probabilities, incorporated here as the VIX.
+        Uses walk forward validation to tune lag order similar to ssAR fx.'''
+        self.error_metrics_Markov = {}
+        self.forecasts_Markov = {}
+
+        for ll in range(1, 2):
+
+            endog = self.train_val_df['BAAFFM']
+            leading_ind = self.train_val_df['VXOCLSx']
+            forecasts = {}
+            
+            # Get the number of initial training observations
+            nobs = len(endog)
+            n_init_training = int(nobs * 0.8)
+            scaler = StandardScaler()
+
+            # Create model for initial training sample, fit parameters
+            training_endog = endog.iloc[:n_init_training]
+            training_endog_preprocessed = pd.DataFrame(scaler.fit_transform(training_endog.values.reshape(-1, 1)))
+            training_leading_preprocessed = pd.DataFrame(scaler.fit_transform(leading_ind.iloc[:n_init_training].values.reshape(-1, 1)))
+            mod = sm.tsa.MarkovAutoregression(training_endog_preprocessed,
+                                        k_regimes=2,
+                                        order=4,
+                                        switching_variance=True,
+                                        exog_tvtp=sm.add_constant(training_leading_preprocessed)
+                                        )
+            
+            np.random.seed(123)
+            res = mod.fit(search_reps=10)
+
+            # Save initial forecast
+            forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
+
+            # Step through the rest of the sample
+            for t in range(n_init_training, nobs):
+                print('Iter: ', t)
+                # Update the results by appending the next observation
+                endog_preprocessed = pd.DataFrame(scaler.fit_transform(endog.iloc[0:t+1].values.reshape(-1, 1))) # re fit
+                leading_preprocessed = pd.DataFrame(scaler.fit_transform(leading_ind.iloc[0:t+1].values.reshape(-1, 1))) 
+                dates = pd.DataFrame(self.train_val_df.iloc[0:t+1, 1].values.reshape(-1, 1))
+    
+                mod = sm.tsa.MarkovAutoregression(endog_preprocessed,
+                                        k_regimes=2,
+                                        order=4,
+                                        switching_variance=True,
+                                        exog_tvtp=sm.add_constant(leading_preprocessed)
+                )
+                res = mod.fit(search_reps=10)
+
+                # Save the new set of forecasts, inverse the scaler
+                forecasts[self.train_val_df.iloc[t, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
+        
+            # Combine all forecasts into a dataframe
+            forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
+            actuals = pd.concat([endog.tail(forecasts.shape[0]), dates.tail(forecasts.shape[0])], axis=1)
+            actuals.columns = ['t_actual', 'sasdate']
+            self.SS_AR_forecasts = pd.merge(forecasts, actuals, on='sasdate', how='inner')
+            self.SS_AR_forecasts['sasdate'] = pd.to_datetime(self.SS_AR_forecasts['sasdate'])
+            # error storage
+            self.error_metrics_AR[ll] = mean_squared_error(self.SS_AR_forecasts['t_actual'], self.SS_AR_forecasts['t_forecast'])
+            # forecast storage
+            self.forecasts_AR['lag_'+str(ll)] = {
+                'df': self.SS_AR_forecasts
+            }
+            self.logger.info('completed training for Markov Switching AR model with lag: '+str(ll))
+
+
+
     def plot_forecasts_ss_AR(self, chosen_lag):
         
         '''Plots and reports forecatss / error metrics from baseline model'''
@@ -153,9 +223,20 @@ class ClassicalModels():
         self.error_metrics_DFM = {}
         self.forecasts_DFM = {}
 
-        for ll in range(1, 4):
+        for ll in range(1, 2):
 
-            endog = self.train_val_df.iloc[:, 1:]
+            endog = self.train_val_df.iloc[:, 2:]
+
+            # create correlation matrix
+            corr_matrix = endog.corr().abs()
+            # select upper triangle of correlation matrix
+            upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(np.bool))
+            # find index of feature columns with correlation greater than 0.25
+            to_drop = [column for column in upper.columns if any(upper[column] > 0.2) and column != 'BAAFFM']
+            # drop correlated (post stationarized) features for computational time purposes 
+            endog = endog.drop(endog[to_drop], axis=1)
+
+            BAAFFM_iloc = endog.columns.get_loc('BAAFFM')
             forecasts = {}
             
             # Get the number of initial training observations
@@ -166,46 +247,47 @@ class ClassicalModels():
             # Create model for initial training sample, fit parameters
             training_endog = endog.iloc[:n_init_training, :]
             training_endog_preprocessed = pd.DataFrame(scaler.fit_transform(training_endog.values))
-            mod = sm.tsa.DynamicFactor(training_endog_preprocessed, k_factors=5, factor_order=ll) ######## CHECK IF YOU NEED ERROR ORDER TOO
+            mod = sm.tsa.DynamicFactor(training_endog_preprocessed, k_factors=2, factor_order=2)
+            res = mod.fit(low_memory=True)
             
-            initial_res = mod.fit(method='powell', disp=False)
-            res = mod.fit(initial_res.params, disp=False)
-            '''
             # Save initial forecast
-            forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
+            forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1][BAAFFM_iloc]
 
             # Step through the rest of the sample
             for t in range(n_init_training, nobs):
                 # Update the results by appending the next observation
-                endog_preprocessed = pd.DataFrame(scaler.fit_transform(endog.iloc[0:t+1, :].values)) # re fit
+                endog_preprocessed = pd.DataFrame(scaler.fit_transform(endog.iloc[:t+1, :].values)) # re fit
                 dates = pd.DataFrame(self.train_val_df.iloc[0:t+1, 1].values.reshape(-1, 1))
     
-                mod = sm.tsa.SARIMAX(endog_preprocessed, order=(ll, 0, 0), trend='c') 
-                res = mod.fit(disp=0) # re-fit
+                mod = sm.tsa.DynamicFactor(endog_preprocessed, k_factors=2, factor_order=2)
+                res = mod.fit(low_memory=True)
 
                 # Save the new set of forecasts, inverse the scaler
-                forecasts[self.train_val_df.iloc[t, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
-        
+                forecasts[self.train_val_df.iloc[t, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1][BAAFFM_iloc]
+                
             # Combine all forecasts into a dataframe
             forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
             actuals = pd.concat([endog.tail(forecasts.shape[0]), dates.tail(forecasts.shape[0])], axis=1)
+            print(actuals)
             actuals.columns = ['t_actual', 'sasdate']
-            self.SS_AR_forecasts = pd.merge(forecasts, actuals, on='sasdate', how='inner')
-            self.SS_AR_forecasts['sasdate'] = pd.to_datetime(self.SS_AR_forecasts['sasdate'])
+            self.SS_DFM_forecasts = pd.merge(forecasts, actuals, on='sasdate', how='inner')
+            self.SS_DFM_forecasts['sasdate'] = pd.to_datetime(self.SS_DFM_forecasts['sasdate'])
             # error storage
-            self.error_metrics_AR[ll] = mean_squared_error(self.SS_AR_forecasts['t_actual'], self.SS_AR_forecasts['t_forecast'])
+            self.error_metrics_DFM[ll] = mean_squared_error(self.SS_DFM_forecasts['t_actual'], self.SS_DFM_forecasts['t_forecast'])
             # forecast storage
-            self.forecasts_AR['lag_'+str(ll)] = {
-                'df': self.SS_AR_forecasts
-            }'''
-            self.logger.info('completed training for DFM model with order: '+str(ll)+' and XXX factors')
+            self.forecasts_DFM['lag_'+str(ll)] = {
+                'df': self.SS_DFM_forecasts
+            }
+            self.logger.info('completed training for DFM model with order: '+str(ll)+' and 1 factors')
+            print(self.forecasts_DFM)
 
     def execute_analysis(self):
         self.get_data()
         self.splice_test_data()
         #self.train_ss_AR()
         #self.plot_forecasts_ss_AR(chosen_lag=1)
-        self.train_ss_DFM()
+        #self.train_ss_DFM()
+        self.train_MarkovSwitch_AR()
 
 def main():
     """ Runs training of classical models and hyperparameter tuning.
