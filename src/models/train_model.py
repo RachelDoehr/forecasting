@@ -24,7 +24,8 @@ BUCKET = 'macro-forecasting1301' # s3 bucket name
 class ClassicalModels():
 
     '''Loads up features, splits into train/test, de-means and standardizes.
-    Fits baseline univariate SARIMA model, then full Dynamic Factor Models, saves error metrics'''
+    Fits baseline univariate AR model, then a 2 regime Markov Switching model with time varying variance and transition probabilities,
+    saves validation set forecasts, models, and error metrics'''
     
     def __init__(self, logger):
         self.logger = logger
@@ -67,7 +68,7 @@ class ClassicalModels():
             
             # Get the number of initial training observations
             nobs = len(endog)
-            n_init_training = int(nobs * 0.97)
+            n_init_training = int(nobs * 0.95)
             scaler = StandardScaler()
 
             # Create model for initial training sample, fit parameters
@@ -93,6 +94,7 @@ class ClassicalModels():
                 # save the model at end of time series
                 if t == nobs-1:
                     self.AR_models['lag_'+str(ll)] = res
+                    self.scaler_AR = scaler
         
             # Combine all forecasts into a dataframe
             forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
@@ -112,65 +114,62 @@ class ClassicalModels():
         pth = Path(self.models_path, 'AR_models').with_suffix('.pkl')
         with open(pth, 'wb') as handle:
             pickle.dump(self.AR_models, handle)
+        pth = Path(self.models_path, 'scaler_AR').with_suffix('.pkl')
+        with open(pth, 'wb') as handle:
+            pickle.dump(self.scaler_AR, handle)
 
     def train_MarkovSwitch_AR(self):
     
-        '''Trains Markov Switching autoregression on univariate series. Allows for time-varying transition probabilities, incorporated here as the VIX.
+        '''Trains Markov Switching autoregression on univariate series.
         Allows for time varying covariance. Uses walk forward validation to tune lag order similar to AR.'''
         self.error_metrics_Markov = {}
         self.forecasts_Markov = {}
         self.MKV_models = {}
 
-        for ll in range(1, 6):
+        for ll in range(1, 13):
 
             endog = self.train_val_df['BAAFFM']
-            leading_ind = self.train_val_df['VXOCLSx']
             forecasts = {}
             
             # Get the number of initial training observations
             nobs = len(endog)
-            n_init_training = int(nobs * 0.97) # usually 0.8, just for now
+            n_init_training = int(nobs * 0.95) # usually 0.8, just for now
             scaler_y = StandardScaler()
 
             # Create model for initial training sample, fit parameters
             training_endog = endog.iloc[:n_init_training]
             training_endog_preprocessed = pd.DataFrame(scaler_y.fit_transform(training_endog.values.reshape(-1, 1)))
-            scaler_lead = StandardScaler()
-            training_leading_preprocessed = pd.DataFrame(scaler_lead.fit_transform(leading_ind.iloc[:n_init_training].values.reshape(-1, 1)))
             mod = sm.tsa.MarkovAutoregression(training_endog_preprocessed,
                                         k_regimes=2,
                                         order=ll,
                                         switching_variance=True,
-                                        exog_tvtp=training_leading_preprocessed
                                         )
             
             np.random.seed(123)
-            res = mod.fit(search_reps=10)
+            res = mod.fit(search_reps=20)
 
             # Save initial forecast
             forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler_y.inverse_transform(res.predict())[len(res.predict())-1]
             # Step through the rest of the sample
             for t in range(n_init_training, nobs):
                 scaler_y = StandardScaler()
-                scaler_lead = StandardScaler()
                 # Update the results by appending the next observation
                 endog_preprocessed = pd.DataFrame(scaler_y.fit_transform(endog.iloc[0:t+1].values.reshape(-1, 1))) # re fit
-                leading_preprocessed = pd.DataFrame(scaler_lead.fit_transform(leading_ind.iloc[0:t+1].values.reshape(-1, 1))) 
                 dates = pd.DataFrame(self.train_val_df.iloc[0:t+1, 1].values.reshape(-1, 1))
     
                 mod = sm.tsa.MarkovAutoregression(endog_preprocessed,
                                         k_regimes=2,
                                         order=ll,
-                                        switching_variance=True,
-                                        exog_tvtp=leading_preprocessed
+                                        switching_variance=True
                 )
-                res = mod.fit(search_reps=10)
+                res = mod.fit(search_reps=20)
 
                 # Save the new set of forecasts, inverse the scaler
                 forecasts[self.train_val_df.iloc[t, 1]] = scaler_y.inverse_transform(res.predict())[len(res.predict())-1]
                 # save the model at end of time series
                 if t == nobs-1:
                     self.MKV_models['lag_'+str(ll)] = res
+                    self.standard_scaler_Markov = scaler_y
         
             # Combine all forecasts into a dataframe
             forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
@@ -190,6 +189,9 @@ class ClassicalModels():
         pth = Path(self.models_path, 'MKV_models').with_suffix('.pkl')
         with open(pth, 'wb') as handle:
             pickle.dump(self.MKV_models, handle)
+        pth = Path(self.models_path, 'scaler_Markov').with_suffix('.pkl')
+        with open(pth, 'wb') as handle:
+            pickle.dump(self.standard_scaler_Markov, handle)
 
     def plot_errors_AR(self):
 
@@ -267,7 +269,7 @@ class ClassicalModels():
         self.plot_errors_AR()
         self.train_MarkovSwitch_AR()
         self.plot_errors_Markov()
-        self.plot_forecasts_Classical(chosen_lag_AR=9, chosen_lag_Markov=2)
+        self.plot_forecasts_Classical(chosen_lag_AR=9, chosen_lag_Markov=6)
 
 def main():
     """ Runs training of classical models and hyperparameter tuning.
