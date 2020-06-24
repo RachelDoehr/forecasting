@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from pathlib import Path
+import pickle
 from sklearn.metrics import explained_variance_score, mean_squared_error
 from io import StringIO
 import logging
@@ -32,6 +33,7 @@ class ClassicalModels():
         self.s3_client = boto3.client('s3')
         self.graphics_path = Path(__file__).resolve().parents[2].joinpath('reports').resolve().joinpath('figures').resolve()
         self.data_path = Path(__file__).resolve().parents[2].joinpath('data').resolve().joinpath('processed').resolve()
+        self.models_path = Path(__file__).resolve().parents[2].joinpath('models').resolve()
 
     def get_data(self):
 
@@ -56,6 +58,7 @@ class ClassicalModels():
         Optimizes lag number by calculating RMSE on validation set during walk-forward training (auto-lag optimization through scipy only available for AIC).'''
         self.error_metrics_AR = {}
         self.forecasts_AR = {}
+        self.AR_models = {}
 
         for ll in range(1, 13):
 
@@ -64,7 +67,7 @@ class ClassicalModels():
             
             # Get the number of initial training observations
             nobs = len(endog)
-            n_init_training = int(nobs * 0.95)
+            n_init_training = int(nobs * 0.97)
             scaler = StandardScaler()
 
             # Create model for initial training sample, fit parameters
@@ -87,6 +90,9 @@ class ClassicalModels():
 
                 # Save the new set of forecasts, inverse the scaler
                 forecasts[self.train_val_df.iloc[t, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
+                # save the model at end of time series
+                if t == nobs-1:
+                    self.AR_models['lag_'+str(ll)] = res
         
             # Combine all forecasts into a dataframe
             forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
@@ -102,12 +108,18 @@ class ClassicalModels():
             }
             self.logger.info('completed training for AR model with lag: '+str(ll))
 
+        # save dictionary of models to disk for later use
+        pth = Path(self.models_path, 'AR_models').with_suffix('.pkl')
+        with open(pth, 'wb') as handle:
+            pickle.dump(self.AR_models, handle)
+
     def train_MarkovSwitch_AR(self):
     
         '''Trains Markov Switching autoregression on univariate series. Allows for time-varying transition probabilities, incorporated here as the VIX.
-        Allows for time varying covariance. Uses walk forward validation to tune lag order similar to ssAR fx.'''
+        Allows for time varying covariance. Uses walk forward validation to tune lag order similar to AR.'''
         self.error_metrics_Markov = {}
         self.forecasts_Markov = {}
+        self.MKV_models = {}
 
         for ll in range(1, 6):
 
@@ -117,43 +129,48 @@ class ClassicalModels():
             
             # Get the number of initial training observations
             nobs = len(endog)
-            n_init_training = int(nobs * 0.95) # usually 0.8, just for now
-            scaler = StandardScaler()
+            n_init_training = int(nobs * 0.97) # usually 0.8, just for now
+            scaler_y = StandardScaler()
 
             # Create model for initial training sample, fit parameters
             training_endog = endog.iloc[:n_init_training]
-            training_endog_preprocessed = pd.DataFrame(scaler.fit_transform(training_endog.values.reshape(-1, 1)))
-            training_leading_preprocessed = pd.DataFrame(scaler.fit_transform(leading_ind.iloc[:n_init_training].values.reshape(-1, 1)))
+            training_endog_preprocessed = pd.DataFrame(scaler_y.fit_transform(training_endog.values.reshape(-1, 1)))
+            scaler_lead = StandardScaler()
+            training_leading_preprocessed = pd.DataFrame(scaler_lead.fit_transform(leading_ind.iloc[:n_init_training].values.reshape(-1, 1)))
             mod = sm.tsa.MarkovAutoregression(training_endog_preprocessed,
                                         k_regimes=2,
                                         order=ll,
                                         switching_variance=True,
-                                        exog_tvtp=sm.add_constant(training_leading_preprocessed)
+                                        exog_tvtp=training_leading_preprocessed
                                         )
             
             np.random.seed(123)
             res = mod.fit(search_reps=10)
 
             # Save initial forecast
-            forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
-
+            forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler_y.inverse_transform(res.predict())[len(res.predict())-1]
             # Step through the rest of the sample
             for t in range(n_init_training, nobs):
+                scaler_y = StandardScaler()
+                scaler_lead = StandardScaler()
                 # Update the results by appending the next observation
-                endog_preprocessed = pd.DataFrame(scaler.fit_transform(endog.iloc[0:t+1].values.reshape(-1, 1))) # re fit
-                leading_preprocessed = pd.DataFrame(scaler.fit_transform(leading_ind.iloc[0:t+1].values.reshape(-1, 1))) 
+                endog_preprocessed = pd.DataFrame(scaler_y.fit_transform(endog.iloc[0:t+1].values.reshape(-1, 1))) # re fit
+                leading_preprocessed = pd.DataFrame(scaler_lead.fit_transform(leading_ind.iloc[0:t+1].values.reshape(-1, 1))) 
                 dates = pd.DataFrame(self.train_val_df.iloc[0:t+1, 1].values.reshape(-1, 1))
     
                 mod = sm.tsa.MarkovAutoregression(endog_preprocessed,
                                         k_regimes=2,
                                         order=ll,
                                         switching_variance=True,
-                                        exog_tvtp=sm.add_constant(leading_preprocessed)
+                                        exog_tvtp=leading_preprocessed
                 )
                 res = mod.fit(search_reps=10)
 
                 # Save the new set of forecasts, inverse the scaler
-                forecasts[self.train_val_df.iloc[t, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1]
+                forecasts[self.train_val_df.iloc[t, 1]] = scaler_y.inverse_transform(res.predict())[len(res.predict())-1]
+                # save the model at end of time series
+                if t == nobs-1:
+                    self.MKV_models['lag_'+str(ll)] = res
         
             # Combine all forecasts into a dataframe
             forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
@@ -169,6 +186,10 @@ class ClassicalModels():
                 'df': self.Markov_fcasts
             }
             self.logger.info('completed training for Markov Switching AR model with lag: '+str(ll))
+        # save dictionary of models to disk for later use
+        pth = Path(self.models_path, 'MKV_models').with_suffix('.pkl')
+        with open(pth, 'wb') as handle:
+            pickle.dump(self.MKV_models, handle)
 
     def plot_errors_AR(self):
 
@@ -176,8 +197,7 @@ class ClassicalModels():
         df_error = pd.DataFrame(self.error_metrics_AR.items())
         
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
-        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=8)
-        
+        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=10)
         # Decorations
         ax1.set_xlabel('Lag', fontsize=20)
         ax1.tick_params(axis='x', rotation=0, labelsize=12)
@@ -189,7 +209,6 @@ class ClassicalModels():
         
         pth = Path(self.graphics_path, 'AR_errors').with_suffix('.png')
         fig.savefig(pth)
-        #plt.show()
         self.logger.info('plotted and saved png file in /reports/figures of AR errors at various lags')
 
     def plot_errors_Markov(self):
@@ -198,28 +217,26 @@ class ClassicalModels():
         df_error = pd.DataFrame(self.error_metrics_Markov.items())
         
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
-        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=8)
+        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=10)
         
         # Decorations
         ax1.set_xlabel('Lag', fontsize=20)
         ax1.tick_params(axis='x', rotation=0, labelsize=12)
         ax1.set_ylabel('Validation Set RMSE', color='black', fontsize=20)
         ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
-
         fig.tight_layout()
         plt.legend()
         plt.title('Error Metrics: Markov switching', fontsize=12, fontweight='bold')
         
         pth = Path(self.graphics_path, 'MKV_errors').with_suffix('.png')
         fig.savefig(pth)
-        #plt.show()
         self.logger.info('plotted and saved png file in /reports/figures of Markov errors at various parameters')
 
     def plot_forecasts_Classical(self, chosen_lag_AR, chosen_lag_Markov):
         
         '''Plots and reports forecats (t+1) for both classical models'''
-        df_Markov = self.forecasts_Markov['lag_'+str(chosen_lag)]['df']
-        df_AR = self.forecasts_AR['lag_'+str(chosen_lag_Markov)]['df']
+        df_Markov = self.forecasts_Markov['lag_'+str(chosen_lag_Markov)]['df']
+        df_AR = self.forecasts_AR['lag_'+str(chosen_lag_AR)]['df']
 
         # Plot Line1 (Left Y Axis)
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
@@ -239,7 +256,6 @@ class ClassicalModels():
 
         fig.tight_layout()
         plt.legend()
-        #plt.show()
         pth = Path(self.graphics_path, 'yhat_y_AR').with_suffix('.png')
         fig.savefig(pth)
         self.logger.info('plotted and saved png file in /reports/figures of forecasts of Classical models vs. actuals')
@@ -257,7 +273,7 @@ def main():
     """ Runs training of classical models and hyperparameter tuning.
     """
     logger = logging.getLogger(__name__)
-    logger.info('training classical models')
+    logger.info('running classical models')
 
     Models = ClassicalModels(logger)
     Models.execute_analysis()
