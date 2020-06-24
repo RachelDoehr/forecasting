@@ -64,7 +64,7 @@ class ClassicalModels():
             
             # Get the number of initial training observations
             nobs = len(endog)
-            n_init_training = int(nobs * 0.8)
+            n_init_training = int(nobs * 0.95)
             scaler = StandardScaler()
 
             # Create model for initial training sample, fit parameters
@@ -100,7 +100,7 @@ class ClassicalModels():
             self.forecasts_AR['lag_'+str(ll)] = {
                 'df': self.SS_AR_forecasts
             }
-            self.logger.info('completed training for AR baseline model with lag: '+str(ll))
+            self.logger.info('completed training for AR model with lag: '+str(ll))
 
     def train_MarkovSwitch_AR(self):
     
@@ -109,7 +109,7 @@ class ClassicalModels():
         self.error_metrics_Markov = {}
         self.forecasts_Markov = {}
 
-        for ll in range(2, 3):
+        for ll in range(1, 6):
 
             endog = self.train_val_df['BAAFFM']
             leading_ind = self.train_val_df['VXOCLSx']
@@ -117,7 +117,7 @@ class ClassicalModels():
             
             # Get the number of initial training observations
             nobs = len(endog)
-            n_init_training = int(nobs * 0.8)
+            n_init_training = int(nobs * 0.95) # usually 0.8, just for now
             scaler = StandardScaler()
 
             # Create model for initial training sample, fit parameters
@@ -128,7 +128,7 @@ class ClassicalModels():
                                         k_regimes=2,
                                         order=ll,
                                         switching_variance=True,
-                                        #exog_tvtp=sm.add_constant(training_leading_preprocessed)
+                                        exog_tvtp=sm.add_constant(training_leading_preprocessed)
                                         )
             
             np.random.seed(123)
@@ -139,7 +139,6 @@ class ClassicalModels():
 
             # Step through the rest of the sample
             for t in range(n_init_training, nobs):
-                print('Iter: ', t)
                 # Update the results by appending the next observation
                 endog_preprocessed = pd.DataFrame(scaler.fit_transform(endog.iloc[0:t+1].values.reshape(-1, 1))) # re fit
                 leading_preprocessed = pd.DataFrame(scaler.fit_transform(leading_ind.iloc[0:t+1].values.reshape(-1, 1))) 
@@ -149,7 +148,7 @@ class ClassicalModels():
                                         k_regimes=2,
                                         order=ll,
                                         switching_variance=True,
-                                        #exog_tvtp=sm.add_constant(leading_preprocessed)
+                                        exog_tvtp=sm.add_constant(leading_preprocessed)
                 )
                 res = mod.fit(search_reps=10)
 
@@ -160,27 +159,74 @@ class ClassicalModels():
             forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
             actuals = pd.concat([endog.tail(forecasts.shape[0]), dates.tail(forecasts.shape[0])], axis=1)
             actuals.columns = ['t_actual', 'sasdate']
-            self.forecasts_Markov = pd.merge(forecasts, actuals, on='sasdate', how='inner')
-            self.forecasts_Markov['sasdate'] = pd.to_datetime(self.forecasts_Markov['sasdate'])
+            self.Markov_fcasts = pd.merge(forecasts, actuals, on='sasdate', how='inner').dropna()
+            self.Markov_fcasts['sasdate'] = pd.to_datetime(self.Markov_fcasts['sasdate'])
+            
             # error storage
-            self.error_metrics_Markov[ll] = mean_squared_error(self.forecasts_Markov['t_actual'], self.forecasts_Markov['t_forecast'])
+            self.error_metrics_Markov[ll] = mean_squared_error(self.Markov_fcasts['t_actual'], self.Markov_fcasts['t_forecast'])
             # forecast storage
             self.forecasts_Markov['lag_'+str(ll)] = {
-                'df': self.forecasts_Markov
+                'df': self.Markov_fcasts
             }
             self.logger.info('completed training for Markov Switching AR model with lag: '+str(ll))
-            print(self.forecasts_Markov)
 
-    def plot_forecasts_ss_AR(self, chosen_lag):
+    def plot_errors_AR(self):
+
+        '''For validation / lag tuning, plots the errors of the different lag terms of AR once trained'''
+        df_error = pd.DataFrame(self.error_metrics_AR.items())
         
-        '''Plots and reports forecatss / error metrics from baseline model'''
-        df = self.forecasts_AR['lag_'+str(chosen_lag)]['df']
+        fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
+        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=8)
+        
+        # Decorations
+        ax1.set_xlabel('Lag', fontsize=20)
+        ax1.tick_params(axis='x', rotation=0, labelsize=12)
+        ax1.set_ylabel('Validation Set RMSE', color='black', fontsize=20)
+        ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
+        fig.tight_layout()
+        plt.legend()
+        plt.title('Error Metrics: AR', fontsize=12, fontweight='bold')
+        
+        pth = Path(self.graphics_path, 'AR_errors').with_suffix('.png')
+        fig.savefig(pth)
+        #plt.show()
+        self.logger.info('plotted and saved png file in /reports/figures of AR errors at various lags')
+
+    def plot_errors_Markov(self):
+    
+        '''For validation / lag tuning, plots the errors of the different lag terms + switching variance/constant once trained'''
+        df_error = pd.DataFrame(self.error_metrics_Markov.items())
+        
+        fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
+        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=8)
+        
+        # Decorations
+        ax1.set_xlabel('Lag', fontsize=20)
+        ax1.tick_params(axis='x', rotation=0, labelsize=12)
+        ax1.set_ylabel('Validation Set RMSE', color='black', fontsize=20)
+        ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
+
+        fig.tight_layout()
+        plt.legend()
+        plt.title('Error Metrics: Markov switching', fontsize=12, fontweight='bold')
+        
+        pth = Path(self.graphics_path, 'MKV_errors').with_suffix('.png')
+        fig.savefig(pth)
+        #plt.show()
+        self.logger.info('plotted and saved png file in /reports/figures of Markov errors at various parameters')
+
+    def plot_forecasts_Classical(self, chosen_lag_AR, chosen_lag_Markov):
+        
+        '''Plots and reports forecats (t+1) for both classical models'''
+        df_Markov = self.forecasts_Markov['lag_'+str(chosen_lag)]['df']
+        df_AR = self.forecasts_AR['lag_'+str(chosen_lag_Markov)]['df']
 
         # Plot Line1 (Left Y Axis)
-        fig, ax1 = plt.subplots(1,1,figsize=(16,9), dpi= 80)
+        fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
         
-        ax1.plot(df['sasdate'], df['t_actual'], color='dodgerblue', label='actual')
-        ax1.plot(df['sasdate'], df['t_forecast'], color='navy', label='forecast', linestyle=":")
+        ax1.plot(df_AR['sasdate'], df_AR['t_actual'], color='dodgerblue', label='actual')
+        ax1.plot(df_AR['sasdate'], df_AR['t_forecast'], color='navy', label=('state space AR, lag='+str(chosen_lag_AR)+' forecast'), linestyle=":")
+        ax1.plot(df_Markov['sasdate'], df_Markov['t_forecast'], color='crimson', label=('Markov switching model, lag='+str(chosen_lag_Markov)+' forecast'), linestyle=":")
 
         # Decorations
         # ax1 (left Y axis)
@@ -193,34 +239,19 @@ class ClassicalModels():
 
         fig.tight_layout()
         plt.legend()
+        #plt.show()
         pth = Path(self.graphics_path, 'yhat_y_AR').with_suffix('.png')
         fig.savefig(pth)
-
-        # MSE
-        df_error = pd.DataFrame(self.error_metrics_AR.items())
-        
-        fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
-        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=6)
-        
-        # Decorations
-        ax1.set_xlabel('Lag', fontsize=20)
-        ax1.tick_params(axis='x', rotation=0, labelsize=12)
-        ax1.set_ylabel('Validation Set RMSE', color='black', fontsize=20)
-        ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
-
-        fig.tight_layout()
-        plt.legend()
-        plt.title('Error Metrics: AR', fontsize=12, fontweight='bold')
-        
-        pth = Path(self.graphics_path, 'AR_errors').with_suffix('.png')
-        fig.savefig(pth)
+        self.logger.info('plotted and saved png file in /reports/figures of forecasts of Classical models vs. actuals')
 
     def execute_analysis(self):
         self.get_data()
         self.splice_test_data()
-        #self.train_ss_AR()
-        #self.plot_forecasts_ss_AR(chosen_lag=1)
+        self.train_ss_AR()
+        self.plot_errors_AR()
         self.train_MarkovSwitch_AR()
+        self.plot_errors_Markov()
+        self.plot_forecasts_Classical(chosen_lag_AR=9, chosen_lag_Markov=2)
 
 def main():
     """ Runs training of classical models and hyperparameter tuning.
