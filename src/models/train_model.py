@@ -20,11 +20,13 @@ import numpy as np
 from pandas.plotting import register_matplotlib_converters
 
 BUCKET = 'macro-forecasting1301' # s3 bucket name
+TRAINING_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of sample to use as training/val. 1-% is test set.
+VALIDATION_SAMPLE_PERCENT = 0.95 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
 
 class ClassicalModels():
 
     '''Loads up features, splits into train/test, de-means and standardizes.
-    Fits baseline univariate AR model, then a 2 regime Markov Switching model with time varying variance and transition probabilities,
+    Fits univariate AR model, then a 2 regime univariate Markov Switching model with time varying variance,
     saves validation set forecasts, models, and error metrics'''
     
     def __init__(self, logger):
@@ -47,10 +49,10 @@ class ClassicalModels():
 
         '''Sets aside test data up front, saves to s3 for evaluation later. Remainder will be used in walk-forward validation to train+tune parameters.'''
         nobs = len(self.features_df)
-        n_init_training_val = int(nobs * 0.8)
+        n_init_training_val = int(nobs * TRAINING_SAMPLE_PERCENT)
         self.test_df = self.features_df.iloc[n_init_training_val:, :]
         self.train_val_df = self.features_df.iloc[0:n_init_training_val, :]
-        pth = Path(self.data_path, 'test').with_suffix('.csv')
+        pth = Path(self.data_path, 'test_classical').with_suffix('.csv')
         self.test_df.to_csv(pth)
     
     def train_ss_AR(self):
@@ -61,14 +63,14 @@ class ClassicalModels():
         self.forecasts_AR = {}
         self.AR_models = {}
 
-        for ll in range(1, 13):
+        def __train_one_lag(ll):
 
             endog = self.train_val_df['BAAFFM']
             forecasts = {}
             
             # Get the number of initial training observations
             nobs = len(endog)
-            n_init_training = int(nobs * 0.95)
+            n_init_training = int(nobs * VALIDATION_SAMPLE_PERCENT)
             scaler = StandardScaler()
 
             # Create model for initial training sample, fit parameters
@@ -110,6 +112,8 @@ class ClassicalModels():
             }
             self.logger.info('completed training for AR model with lag: '+str(ll))
 
+        [__train_one_lag(lag_value) for lag_value in range(1, 13)]
+
         # save dictionary of models to disk for later use
         pth = Path(self.models_path, 'AR_models').with_suffix('.pkl')
         with open(pth, 'wb') as handle:
@@ -126,14 +130,14 @@ class ClassicalModels():
         self.forecasts_Markov = {}
         self.MKV_models = {}
 
-        for ll in range(1, 13):
+        def __train_one_lag(ll):
 
             endog = self.train_val_df['BAAFFM']
             forecasts = {}
             
             # Get the number of initial training observations
             nobs = len(endog)
-            n_init_training = int(nobs * 0.95) # usually 0.8, just for now
+            n_init_training = int(nobs * VALIDATION_SAMPLE_PERCENT) 
             scaler_y = StandardScaler()
 
             # Create model for initial training sample, fit parameters
@@ -185,6 +189,9 @@ class ClassicalModels():
                 'df': self.Markov_fcasts
             }
             self.logger.info('completed training for Markov Switching AR model with lag: '+str(ll))
+        
+        [__train_one_lag(lag_value) for lag_value in range(2, 5)]
+
         # save dictionary of models to disk for later use
         pth = Path(self.models_path, 'MKV_models').with_suffix('.pkl')
         with open(pth, 'wb') as handle:
@@ -271,14 +278,78 @@ class ClassicalModels():
         self.plot_errors_Markov()
         self.plot_forecasts_Classical(chosen_lag_AR=9, chosen_lag_Markov=6)
 
+class MLModels():
+
+    '''Loads up features, splits into train/test, de-means and standardizes. Uses full multivariate dataset with different regularization strategies to feature
+    select on high dimensional data. Fits elastic net, Adaboost (decision tree), SVM regressor with / without non-linear kernel, and ANN.
+    Saves validation set forecasts, models, and error metrics'''
+    
+    def __init__(self, logger):
+        self.logger = logger
+        sns.set(style="white")
+        register_matplotlib_converters()
+        self.s3_client = boto3.client('s3')
+        self.graphics_path = Path(__file__).resolve().parents[2].joinpath('reports').resolve().joinpath('figures').resolve()
+        self.data_path = Path(__file__).resolve().parents[2].joinpath('data').resolve().joinpath('processed').resolve()
+        self.models_path = Path(__file__).resolve().parents[2].joinpath('models').resolve()
+
+    def get_data(self):
+
+        '''Reads in csv from s3'''
+        obj = self.s3_client.get_object(Bucket=BUCKET, Key='features.csv')
+        self.features_df = pd.read_csv(io.BytesIO(obj['Body'].read()))
+        self.logger.info('loaded data...')
+
+    def splice_test_data(self):
+
+        '''Sets aside test data up front, saves to s3 for evaluation later. Remainder will be used in walk-forward validation to train+tune parameters.'''
+        nobs = len(self.features_df)
+        n_init_training_val = int(nobs * TRAINING_SAMPLE_PERCENT)
+        self.test_df = self.features_df.iloc[n_init_training_val:, :]
+        self.train_val_df = self.features_df.iloc[0:n_init_training_val, :]
+        pth = Path(self.data_path, 'test_ml').with_suffix('.csv')
+        self.test_df.to_csv(pth)
+
+    def series_to_supervised(df, desired_lags=1, desired_forecasts=1, dropnan=True):
+        
+        """Frame a time series as a supervised learning dataset."""
+        n_vars = 1 if df.shape[1] == 1 else df.shape[1]
+        cols, names = list(), list()
+        # input sequence (t-n, ... t-1)
+        for i in range(desired_lags, 0, -1):
+            cols.append(df.shift(i))
+            names += [('var%d(t-%d)' % (j+1, i)) for j in range(n_vars)]
+        # forecast sequence (t, t+1, ... t+n)
+        for i in range(0, desired_forecasts):
+            cols.append(df.shift(-i))
+            if i == 0:
+                names += [('var%d(t)' % (j+1)) for j in range(n_vars)]
+            else:
+                names += [('var%d(t+%d)' % (j+1, i)) for j in range(n_vars)]
+        agg = concat(cols, axis=1)
+        agg.columns = names
+        # drop rows with NaN values
+        if dropnan:
+            agg.dropna(inplace=True)
+        return agg
+    
+    def execute_analysis(self):
+
+        '''Executes training, scaling, tuning, and error analysis for ml models, saves final models to disk.'''
+        self.get_data()
+        self.splice_test_data()
+
 def main():
-    """ Runs training of classical models and hyperparameter tuning.
+    """ Runs training of machine learning models and hyperparameter tuning.
     """
     logger = logging.getLogger(__name__)
-    logger.info('running classical models')
+    logger.info('running classical models...')
+    UnivariateClassicalModels = ClassicalModels(logger)
+    UnivariateClassicalModels.execute_analysis()
 
-    Models = ClassicalModels(logger)
-    Models.execute_analysis()
+    logger.info('running ML models...')
+    MultivariateMLModels = MLModels(logger)
+    MultivariateMLModels.execute_analysis()
 
 if __name__ == '__main__':
     log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
