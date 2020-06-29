@@ -3,6 +3,7 @@ import itertools
 from matplotlib import cm
 from sklearn.linear_model import ElasticNet, SGDRegressor
 from pathlib import Path
+from sklearn.svm import SVR
 import pickle
 from sklearn.metrics import explained_variance_score, mean_squared_error, r2_score
 from io import StringIO
@@ -472,40 +473,112 @@ class MLModels():
 
         self.logger.info('plotted and saved png files of error metrics in /reports/figures for elastic net hyperparameters')
 
+    def train_SVM_reg(self, maxlags):
+
+        '''Trains support vector machine regression models using walk forward validation across a range of hyperparameters C, gamma, and lag order. For each lag value, steps through time
+        steps and trains C/gamma variations, stores forecasts. Calculates MSE for each C/gamma/lag order order possibility. Manual tuning on optimal kernel done non-programmatically'''
+        forecasts = {
+            'C':  list(),
+            'gamma': list(),
+            'lag': list(),
+            'forecast': list(),
+            'forecast_t': list()
+        }
+        SVM_params = {
+            'C': np.linspace(0.8, 1.0, 11),#np.linspace(0.1,1,11),
+            'gamma': np.linspace(0.1,1,11)
+        }
+        SVM_models = list()
+
+        for lag_val in range(1, maxlags+1):
+
+            Y = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, -1]
+            X = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, 0:-2]
+            dates = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, -2]
+            
+            # Get the number of initial training observations
+            nobs = len(Y)
+            n_init_training = int(nobs * VALIDATION_SAMPLE_PERCENT)
+            
+            for time_step in range(0, (nobs-n_init_training-1)):
+                scaler_X, scaler_y = StandardScaler(), StandardScaler()
+
+                # Create model for training sample, gridsearch and fit parameters
+                training_X, training_Y = X.iloc[:n_init_training+time_step], Y.iloc[:n_init_training+time_step]
+                training_X_preprocessed, training_Y_preprocessed = pd.DataFrame(scaler_X.fit_transform(training_X.values)), pd.DataFrame(scaler_y.fit_transform(training_Y.values.reshape(-1, 1)))
+                test_X = X.iloc[n_init_training+1+time_step, :]
+                test_X_preprocessed = pd.DataFrame(scaler_X.transform(test_X.values.reshape(1, -1)))
+                
+                for ratios in itertools.product(SVM_params['C'], SVM_params['gamma']):
+                    regr = SVR(random_state=42, C=ratios[0], gamma=ratios[1])
+                    regr.fit(training_X_preprocessed, training_Y_preprocessed)
+
+                    values = [
+                        ratios[0],
+                        ratios[1],
+                        lag_val,
+                        dates.iloc[n_init_training+1+time_step],
+                        scaler_y.inverse_transform(regr.predict(test_X_preprocessed))[0]
+                    ]
+                    [forecasts[k].append(v) for k, v in zip(['C', 'gamma', 'lag', 'forecast_t', 'forecast'], values)]
+
+                    # save models
+                    if time_step == (nobs-n_init_training-2):
+                        SVM_models.append({
+                            'C': ratios[0],
+                            'gamma': ratios[1],
+                            'lag': lag_val,
+                            'model': regr
+                            })
+            self.logger.info('completed a full hyperparamter search / training for a lag val of SVM')
+
+        forecasts = pd.DataFrame(forecasts)
+        actuals = pd.concat([Y, dates], axis=1)
+        actuals.columns = ['t_actual', 'sasdate']
+        self.SVM_forecasts = pd.merge(forecasts, actuals, left_on='forecast_t', right_on='sasdate', how='left')
+        
+        self.SVM_forecasts['forecast_t'] = pd.to_datetime(self.EN_forecasts['forecast_t'])
+        # error storage
+        self.error_metrics_SVM = self.SVM_forecasts.groupby(['C', 'gamma', 'lag']).apply(self._mse).reset_index()
+        # save dictionary of models to disk for later use
+        with open(Path(self.models_path, 'SVM_reg_models').with_suffix('.pkl'), 'wb') as handle:
+            pickle.dump(self.SVM_models, handle)
+        with open(Path(self.models_path, 'scaler_SVM_reg').with_suffix('.pkl'), 'wb') as handle:
+            pickle.dump(scaler_X, handle) # last one in memory; full val/train sample
+
     def plot_ML_forecasts(self):
 
         '''Plots and reports forecats (t+1) for all ML models'''
     
         best_en = self.error_metrics_EN.iloc[self.error_metrics_EN['mse'].idxmin()].reset_index().T
-        print(best_en)
-        print(best_en.columns)
-        best_en_forecasts = self.EN_forecasts[
-                                (self.EN_forecasts.l1_ratio == best_en.l1_ratio) &
-                                (self.EN_forecasts.alpha == best_en.alpha) &
-                                (self.EN_forecasts.lag == best_en.lag)
-                            ]
+        best_en.columns = best_en.iloc[0]
 
-        print(best_en_forecasts)
+        best_en_forecasts = self.EN_forecasts[
+                                (self.EN_forecasts.l1_ratio == best_en.l1_ratio.iloc[1]) &
+                                (self.EN_forecasts.alpha == best_en.alpha.iloc[1]) &
+                                (self.EN_forecasts.lag == best_en.lag.iloc[1])
+                            ]
 
         # Plot Line1 (Left Y Axis)
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
+        best_en_forecasts['sasdate'] = pd.to_datetime(best_en_forecasts.sasdate)
         
         ax1.plot(best_en_forecasts['sasdate'], best_en_forecasts['t_actual'], color='dodgerblue', label='actual')
-        ax1.plot(best_en_forecasts['sasdate'], best_en_forecasts['forecast_t'], color='navy', label=(
-            'elastic net, lag='+str(best_en_forecasts.lag)+
-            'l1='+str(best_en_forecasts.l1_ratio)+
-            'l2='+str(best_en_forecasts.alpha)+
-            ' forecast'), linestyle=":")
+        #ax1.plot(best_en_forecasts.index, best_en_forecasts['forecast_t'], color='navy', label=(
+        #    'elastic net, lag='+str(best_en_forecasts.lag)+
+        #    'l1='+str(best_en_forecasts.l1_ratio)+
+        #    'l2='+str(best_en_forecasts.alpha)+
+        #    ' forecast'), linestyle=":")
         #ax1.plot(df_Markov['sasdate'], df_Markov['t_forecast'], color='crimson', label=('Markov switching model, lag='+str(chosen_lag_Markov)+' forecast'), linestyle=":")
 
         # Decorations
-        # ax1 (left Y axis)
         ax1.set_xlabel('Date', fontsize=20)
         ax1.tick_params(axis='x', rotation=0, labelsize=12)
         ax1.set_ylabel('BAAFFM Spread', color='black', fontsize=20)
         ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
         ax1.grid(alpha=.4)
         plt.title('Forecast vs. Realized Values: BAAFFM', weight='bold')
+        plt.show()
 
         fig.tight_layout()
         plt.legend()
@@ -516,12 +589,13 @@ class MLModels():
 
     def execute_analysis(self):
 
-        '''Executes training, scaling, tuning, and error analysis for ml models, saves final models to disk.'''
+        '''Executes training, scaling, tuning, and error analysis for ml models, saves final models to disk.
+        All model optimizition is done programmatically with hyperparameter grid search (unlike manual selection of lag order in Classical models)'''
         self.get_data()
         self.splice_test_data()
-        self.reframe_train_val_df(maxlags=6)
-        self.train_elastic_net(maxlags=3)
-        self.plot_EN_metrics(maxlags=3)
+        self.reframe_train_val_df(maxlags=2)
+        self.train_elastic_net(maxlags=2)
+        self.plot_EN_metrics(maxlags=2)
         self.plot_ML_forecasts()
 
 def main():
