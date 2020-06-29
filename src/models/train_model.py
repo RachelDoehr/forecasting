@@ -269,7 +269,7 @@ class ClassicalModels():
 
         fig.tight_layout()
         plt.legend()
-        pth = Path(self.graphics_path, 'yhat_y_AR').with_suffix('.png')
+        pth = Path(self.graphics_path, 'yhat_y_Classical').with_suffix('.png')
         fig.savefig(pth)
         self.logger.info('plotted and saved png file in /reports/figures of forecasts of Classical models vs. actuals')
 
@@ -379,7 +379,7 @@ class MLModels():
             'forecast_t': list()
         }
         EN_params = {
-            'l1_ratio': np.linspace(0.1,1,11),
+            'l1_ratio': np.linspace(0.8, 1.0, 11),#np.linspace(0.1,1,11),
             'alpha': np.linspace(0.1,1,11)
         }
         EN_models = list()
@@ -434,7 +434,6 @@ class MLModels():
         self.EN_forecasts['forecast_t'] = pd.to_datetime(self.EN_forecasts['forecast_t'])
         # error storage
         self.error_metrics_EN = self.EN_forecasts.groupby(['l1_ratio', 'alpha', 'lag']).apply(self._mse).reset_index()
-        self.error_metrics_EN.to_csv('e.csv')
         # save dictionary of models to disk for later use
         with open(Path(self.models_path, 'elastic_net_models').with_suffix('.pkl'), 'wb') as handle:
             pickle.dump(self.EN_models, handle)
@@ -455,7 +454,7 @@ class MLModels():
 
             # Plot the surface.
             surf1 = ax.plot_trisurf(X_one, Y_one, Z_one, cmap=cm.coolwarm,
-                                linewidth=0, antialiased=False, alpha=0.5)
+                                linewidth=0, antialiased=False, alpha=0.8)
 
             # Add a color bar which maps values to colors.
             fig.colorbar(surf1, shrink=0.5, aspect=5)
@@ -472,7 +471,48 @@ class MLModels():
             plt.close()
 
         self.logger.info('plotted and saved png files of error metrics in /reports/figures for elastic net hyperparameters')
-            
+
+    def plot_ML_forecasts(self):
+
+        '''Plots and reports forecats (t+1) for all ML models'''
+    
+        best_en = self.error_metrics_EN.iloc[self.error_metrics_EN['mse'].idxmin()].reset_index().T
+        print(best_en)
+        print(best_en.columns)
+        best_en_forecasts = self.EN_forecasts[
+                                (self.EN_forecasts.l1_ratio == best_en.l1_ratio) &
+                                (self.EN_forecasts.alpha == best_en.alpha) &
+                                (self.EN_forecasts.lag == best_en.lag)
+                            ]
+
+        print(best_en_forecasts)
+
+        # Plot Line1 (Left Y Axis)
+        fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
+        
+        ax1.plot(best_en_forecasts['sasdate'], best_en_forecasts['t_actual'], color='dodgerblue', label='actual')
+        ax1.plot(best_en_forecasts['sasdate'], best_en_forecasts['forecast_t'], color='navy', label=(
+            'elastic net, lag='+str(best_en_forecasts.lag)+
+            'l1='+str(best_en_forecasts.l1_ratio)+
+            'l2='+str(best_en_forecasts.alpha)+
+            ' forecast'), linestyle=":")
+        #ax1.plot(df_Markov['sasdate'], df_Markov['t_forecast'], color='crimson', label=('Markov switching model, lag='+str(chosen_lag_Markov)+' forecast'), linestyle=":")
+
+        # Decorations
+        # ax1 (left Y axis)
+        ax1.set_xlabel('Date', fontsize=20)
+        ax1.tick_params(axis='x', rotation=0, labelsize=12)
+        ax1.set_ylabel('BAAFFM Spread', color='black', fontsize=20)
+        ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
+        ax1.grid(alpha=.4)
+        plt.title('Forecast vs. Realized Values: BAAFFM', weight='bold')
+
+        fig.tight_layout()
+        plt.legend()
+        pth = Path(self.graphics_path, 'yhat_y_ML').with_suffix('.png')
+        fig.savefig(pth)
+        self.logger.info('plotted and saved png file in /reports/figures of forecasts of ML models vs. actuals')
+
 
     def execute_analysis(self):
 
@@ -482,6 +522,7 @@ class MLModels():
         self.reframe_train_val_df(maxlags=6)
         self.train_elastic_net(maxlags=3)
         self.plot_EN_metrics(maxlags=3)
+        self.plot_ML_forecasts()
 
 def main():
     """ Runs training of machine learning models and hyperparameter tuning.
