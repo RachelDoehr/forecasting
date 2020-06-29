@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 import itertools
-from sklearn.linear_model import ElasticNet
+from matplotlib import cm
+from sklearn.linear_model import ElasticNet, SGDRegressor
 from pathlib import Path
 import pickle
-from sklearn.metrics import explained_variance_score, mean_squared_error
+from sklearn.metrics import explained_variance_score, mean_squared_error, r2_score
 from io import StringIO
 import logging
 from dotenv import find_dotenv, load_dotenv
@@ -14,6 +15,7 @@ import statsmodels.api as sm
 from matplotlib import pyplot as plt
 from cycler import cycler
 import datetime
+from mpl_toolkits.mplot3d import Axes3D
 import io
 from functools import reduce
 from sklearn.preprocessing import StandardScaler
@@ -316,19 +318,22 @@ class MLModels():
         pth = Path(self.data_path, 'test_ml').with_suffix('.csv')
         self.test_df.to_csv(pth)
 
-    def _series_to_supervised(self, df, desired_lags, desired_forecasts, dropnan):
-        
+    def _series_to_supervised(self, df, n_in, n_out, dropnan=True):
+
         """Frame a time series as a supervised learning dataset."""
+        n_vars = 1 if type(df) is list else df.shape[1]
         cols, names = list(), list()
         # input sequence (t-n, ... t-1)
-        for i in range(desired_lags, 0, -1):
+        for i in range(n_in, 0, -1):
             cols.append(df.shift(i))
-        for ll in range(desired_lags, 0, -1):
-            names.extend([str(col) + '_(t-'+str(ll)+')' for col in df.columns])
+            names += [('var%d(t-%d)' % (j+1, i)) for j in range(n_vars)]
         # forecast sequence (t, t+1, ... t+n)
-        for i in range(0, desired_forecasts):
+        for i in range(0, n_out):
             cols.append(df.shift(-i))
-        names.extend([str(col) + '_(t+'+str(desired_forecasts-1)+')' for col in df.columns])
+            if i == 0:
+                names += [('var%d(t)' % (j+1)) for j in range(n_vars)]
+            else:
+                names += [('var%d(t+%d)' % (j+1, i)) for j in range(n_vars)]
         agg = pd.concat(cols, axis=1)
         agg.columns = names
         # drop rows with NaN values
@@ -336,23 +341,40 @@ class MLModels():
             agg.dropna(inplace=True)
         return agg
     
-    def reframe_train_val_df(self):
+    def reframe_train_val_df(self, maxlags):
 
         '''Uses series to supervised function to turn the transformed training/val dataset into a supervised learning problem, by
         adding lag terms as new columns to the dataframe, as well as t+1 forecast column of desired prediction variables (just one, BAAFFM).'''
         pre_flipped_df = self.train_val_df.copy()
-        self.en_lags=1
-        reframed = self._series_to_supervised(pre_flipped_df, desired_lags=self.en_lags, desired_forecasts=1, dropnan=True) # note here b/c of time reframing issue, lags=2 -> t and t-1 are used, for 2 time steps back use lags=3
-        variables = [c for c in reframed.columns if '(t+0)' not in c and 'sasdate' not in c]
-        self.reframed_df = pd.concat([reframed[[v for v in variables if 'Unnamed' not in v]], reframed[['BAAFFM_(t+0)', 'sasdate_(t+0)']]], axis=1)
-    
-    def train_elastic_net(self):
+        self.reframed_dfs = {}
 
-        '''Trains state space SARIMAX model (specified as purely AR process, already integrated) as baseline, including walk forward validation and standardization.
-        Optimizes lag number by calculating RMSE on validation set during walk-forward training (auto-lag optimization through scipy only available for AIC).'''
+        for lag_val in range(1,  maxlags+1):
+            reframed = self._series_to_supervised(pre_flipped_df, lag_val, 1, dropnan=True)
+            # removing the variables: sasdate, 'Unnamed' (the indx), and everything at time (t) except for BAAFFM (Y var) and sasdate
+            var_num_unnamed = [c for c in reframed.columns if 'var1(' in c or 'var2(' in c] # the index, to remove
+            var_num_extra_current = [c for c in reframed.columns if '(t)' in c] # only predicting one var, remove these
+            # then add back:
+            var_num_sasdate = [c for c in reframed.columns if 'var2(' in c and '(t)' in c] # sasdate, the correct current one
+            var_num_baaffm = [c for c in reframed.columns if ('var'+str(pre_flipped_df.columns.get_loc('BAAFFM')+1)+'(') in c and '(t)' in c] # keep this Y var, tack on at the end
+
+            var_num_unnamed.extend(var_num_extra_current)
+            var_num_sasdate.extend(var_num_baaffm)
+            self.reframed_dfs['lag_'+str(lag_val)] = pd.concat([reframed[[c for c in reframed.columns if c not in var_num_unnamed]], reframed[[c for c in reframed.columns if c in var_num_sasdate]]], axis=1)
+        self.logger.info('reframed dataset as supervised learning problem')
+
+    def _mse(self, y):
+        r2 = r2_score(y['t_actual'], y['forecast'])
+        mse = mean_squared_error(y['t_actual'], y['forecast'])
+        return pd.Series(dict(r2=r2, mse=mse))
+
+    def train_elastic_net(self, maxlags):
+
+        '''Trains elastic net models using walk forward validation across a range of hyperparameters l1, l2, and lag order. For each lag value, steps through time
+        steps and trains l1/l2 variations, stores forecasts. Calculates MSE for each l1/l2/lag order possibility.'''
         forecasts = {
             'l1_ratio':  list(),
             'alpha': list(),
+            'lag': list(),
             'forecast': list(),
             'forecast_t': list()
         }
@@ -362,70 +384,104 @@ class MLModels():
         }
         EN_models = list()
 
-        Y = self.reframed_df['BAAFFM_(t+0)']
-        X = self.reframed_df[[c for c in self.reframed_df if '(t+0)' not in c]] # removes date col and Y
-        dates = self.reframed_df['sasdate_(t+0)']
-        
-        # Get the number of initial training observations
-        nobs = len(Y)
-        n_init_training = int(nobs * VALIDATION_SAMPLE_PERCENT)
+        for lag_val in range(1, maxlags+1):
 
-        for time_step in range(0, (nobs-n_init_training-self.en_lags)):
-            scaler_X, scaler_y = StandardScaler(), StandardScaler()
+            Y = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, -1]
+            X = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, 0:-2]
+            dates = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, -2]
+            
+            # Get the number of initial training observations
+            nobs = len(Y)
+            n_init_training = int(nobs * VALIDATION_SAMPLE_PERCENT)
+            
+            for time_step in range(0, (nobs-n_init_training-1)):
+                scaler_X, scaler_y = StandardScaler(), StandardScaler()
 
-            # Create model for training sample, gridsearch and fit parameters
-            training_X = X.iloc[:n_init_training+time_step]
-            training_X_preprocessed = pd.DataFrame(scaler_X.fit_transform(training_X.values))
-            test_X = X.iloc[n_init_training+1+time_step, :]
-            test_X_preprocessed = pd.DataFrame(scaler_X.transform(test_X.values.reshape(1, -1)))
-            training_Y = Y.iloc[:n_init_training+time_step]
-            training_Y_preprocessed = pd.DataFrame(scaler_y.fit_transform(training_Y.values.reshape(-1, 1)))
+                # Create model for training sample, gridsearch and fit parameters
+                training_X, training_Y = X.iloc[:n_init_training+time_step], Y.iloc[:n_init_training+time_step]
+                training_X_preprocessed, training_Y_preprocessed = pd.DataFrame(scaler_X.fit_transform(training_X.values)), pd.DataFrame(scaler_y.fit_transform(training_Y.values.reshape(-1, 1)))
+                test_X = X.iloc[n_init_training+1+time_step, :]
+                test_X_preprocessed = pd.DataFrame(scaler_X.transform(test_X.values.reshape(1, -1)))
+                
+                for ratios in itertools.product(EN_params['l1_ratio'], EN_params['alpha']):
+                    regr = ElasticNet(random_state=42, l1_ratio=ratios[0], alpha=ratios[1], warm_start=True, fit_intercept=False)
+                    regr.fit(training_X_preprocessed, training_Y_preprocessed)
 
-            for ratios in itertools.product(EN_params['l1_ratio'], EN_params['alpha']):
-                regr = ElasticNet(random_state=0, l1_ratio=ratios[0], alpha=ratios[1])
-                regr.fit(training_X_preprocessed, training_Y_preprocessed)
-                forecasts['l1_ratio'].append(ratios[0])
-                forecasts['alpha'].append(ratios[1])
-                forecasts['forecast_t'].append(dates.iloc[n_init_training+1+time_step])
-                forecasts['forecast'].append(scaler_y.inverse_transform(regr.predict(test_X_preprocessed))[0])
+                    values = [
+                        ratios[0],
+                        ratios[1],
+                        lag_val,
+                        dates.iloc[n_init_training+1+time_step],
+                        scaler_y.inverse_transform(regr.predict(test_X_preprocessed))[0]
+                    ]
+                    [forecasts[k].append(v) for k, v in zip(['l1_ratio', 'alpha', 'lag', 'forecast_t', 'forecast'], values)]
 
-                # save models
-                if time_step == (nobs-n_init_training+1-self.en_lags)-1:
-                    EN_models.append({
-                        'l1_ratio': ratios[0],
-                        'alpha': ratios[1],
-                        'model': regr
-                        })
-            print('time step', time_step)
+                    # save models
+                    if time_step == (nobs-n_init_training-2):
+                        EN_models.append({
+                            'l1_ratio': ratios[0],
+                            'alpha': ratios[1],
+                            'lag': lag_val,
+                            'model': regr
+                            })
+            self.logger.info('completed a full hyperparamter search / training for a lag val of elastic net')
 
         forecasts = pd.DataFrame(forecasts)
-        forecasts.to_csv('a.csv')
-        '''
-        actuals = pd.concat([endog.tail(forecasts.shape[0]), dates.tail(forecasts.shape[0])], axis=1)
+        actuals = pd.concat([Y, dates], axis=1)
         actuals.columns = ['t_actual', 'sasdate']
-        self.SS_AR_forecasts = pd.merge(forecasts, actuals, on='sasdate', how='inner')
-        self.SS_AR_forecasts['sasdate'] = pd.to_datetime(self.SS_AR_forecasts['sasdate'])
+        self.EN_forecasts = pd.merge(forecasts, actuals, left_on='forecast_t', right_on='sasdate', how='left')
+        
+        self.EN_forecasts['forecast_t'] = pd.to_datetime(self.EN_forecasts['forecast_t'])
         # error storage
-        self.error_metrics_AR[ll] = mean_squared_error(self.SS_AR_forecasts['t_actual'], self.SS_AR_forecasts['t_forecast'])
-        # forecast storage
-        self.forecasts_AR['lag_'+str(ll)] = {
-            'df': self.SS_AR_forecasts
-        }
-        '''
+        self.error_metrics_EN = self.EN_forecasts.groupby(['l1_ratio', 'alpha', 'lag']).apply(self._mse).reset_index()
+        self.error_metrics_EN.to_csv('e.csv')
         # save dictionary of models to disk for later use
         with open(Path(self.models_path, 'elastic_net_models').with_suffix('.pkl'), 'wb') as handle:
             pickle.dump(self.EN_models, handle)
         with open(Path(self.models_path, 'scaler_elastic_net').with_suffix('.pkl'), 'wb') as handle:
             pickle.dump(scaler_X, handle) # last one in memory; full val/train sample
-        self.logger.info('completed training for Elastic Net models')
+
+    def plot_EN_metrics(self, maxlags):
+
+        '''Plots the error metrics of elastic nets, 1 plot per lag that shows the l1/l2 MSE'''
+        for jj in range(1, maxlags+1):
+
+            fig = plt.figure()
+            one_lag = self.error_metrics_EN[self.error_metrics_EN.lag == jj]
+            X_one, Y_one = np.array(one_lag.l1_ratio), np.array(one_lag.alpha)
+            Z_one = np.array(one_lag.mse)
+
+            ax = fig.gca(projection='3d')
+
+            # Plot the surface.
+            surf1 = ax.plot_trisurf(X_one, Y_one, Z_one, cmap=cm.coolwarm,
+                                linewidth=0, antialiased=False, alpha=0.5)
+
+            # Add a color bar which maps values to colors.
+            fig.colorbar(surf1, shrink=0.5, aspect=5)
+
+            plt.xlabel('l1 ratio', fontsize=9)
+            plt.ylabel('l2 ratio (alpha)', fontsize=9)
+            plt.suptitle('Grid search for elastic net, lag order=' + str(jj))
+            plt.title('MSE')
+
+            fig.tight_layout()
+            plt.legend()
+            pth = Path(self.graphics_path, 'elasticnet_hyperparams_'+str(jj)).with_suffix('.png')
+            fig.savefig(pth)
+            plt.close()
+
+        self.logger.info('plotted and saved png files of error metrics in /reports/figures for elastic net hyperparameters')
+            
 
     def execute_analysis(self):
 
         '''Executes training, scaling, tuning, and error analysis for ml models, saves final models to disk.'''
         self.get_data()
         self.splice_test_data()
-        self.reframe_train_val_df()
-        self.train_elastic_net()
+        self.reframe_train_val_df(maxlags=6)
+        self.train_elastic_net(maxlags=3)
+        self.plot_EN_metrics(maxlags=3)
 
 def main():
     """ Runs training of machine learning models and hyperparameter tuning.
