@@ -26,7 +26,7 @@ from pandas.plotting import register_matplotlib_converters
 
 BUCKET = 'macro-forecasting1301' # s3 bucket name
 TRAINING_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of sample to use as training/val. 1-% is test set.
-VALIDATION_SAMPLE_PERCENT = 0.95 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
+VALIDATION_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
 
 class ClassicalModels():
 
@@ -405,7 +405,7 @@ class MLModels():
                 test_X_preprocessed = pd.DataFrame(scaler_X.transform(test_X.values.reshape(1, -1)))
                 
                 for ratios in itertools.product(EN_params['l1_ratio'], EN_params['alpha']):
-                    regr = ElasticNet(random_state=42, l1_ratio=ratios[0], alpha=ratios[1], warm_start=True, fit_intercept=False)
+                    regr = ElasticNet(random_state=42, l1_ratio=ratios[0], alpha=ratios[1], warm_start=True, fit_intercept=True)
                     regr.fit(training_X_preprocessed, training_Y_preprocessed)
 
                     values = [
@@ -552,6 +552,7 @@ class MLModels():
     
         best_en = self.error_metrics_EN.iloc[self.error_metrics_EN['mse'].idxmin()].reset_index().T
         best_en.columns = best_en.iloc[0]
+        print('Found best EN hypers at: ', best_en)
 
         best_en_forecasts = self.EN_forecasts[
                                 (self.EN_forecasts.l1_ratio == best_en.l1_ratio.iloc[1]) &
@@ -564,11 +565,7 @@ class MLModels():
         best_en_forecasts['sasdate'] = pd.to_datetime(best_en_forecasts.sasdate)
         
         ax1.plot(best_en_forecasts['sasdate'], best_en_forecasts['t_actual'], color='dodgerblue', label='actual')
-        #ax1.plot(best_en_forecasts.index, best_en_forecasts['forecast_t'], color='navy', label=(
-        #    'elastic net, lag='+str(best_en_forecasts.lag)+
-        #    'l1='+str(best_en_forecasts.l1_ratio)+
-        #    'l2='+str(best_en_forecasts.alpha)+
-        #    ' forecast'), linestyle=":")
+        ax1.plot(best_en_forecasts['sasdate'], best_en_forecasts['forecast'], color='navy', label='elastic net forecast', linestyle=":")
         #ax1.plot(df_Markov['sasdate'], df_Markov['t_forecast'], color='crimson', label=('Markov switching model, lag='+str(chosen_lag_Markov)+' forecast'), linestyle=":")
 
         # Decorations
@@ -578,7 +575,6 @@ class MLModels():
         ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
         ax1.grid(alpha=.4)
         plt.title('Forecast vs. Realized Values: BAAFFM', weight='bold')
-        plt.show()
 
         fig.tight_layout()
         plt.legend()
