@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import itertools
 from matplotlib import cm
-from sklearn.linear_model import ElasticNet, SGDRegressor
+from sklearn.linear_model import ElasticNet, SGDRegressor, LinearRegression
 from pathlib import Path
 from sklearn.svm import SVR
 import pickle
@@ -10,13 +10,15 @@ from io import StringIO
 import logging
 from dotenv import find_dotenv, load_dotenv
 import boto3
-import seaborn as sns
 import matplotlib
 import statsmodels.api as sm
+import umap
 from matplotlib import pyplot as plt
+import seaborn as sns
 from cycler import cycler
 import datetime
 from mpl_toolkits.mplot3d import Axes3D
+import umap.plot as up
 import io
 from functools import reduce
 from sklearn.preprocessing import StandardScaler
@@ -26,7 +28,7 @@ from pandas.plotting import register_matplotlib_converters
 
 BUCKET = 'macro-forecasting1301' # s3 bucket name
 TRAINING_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of sample to use as training/val. 1-% is test set.
-VALIDATION_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
+VALIDATION_SAMPLE_PERCENT = 0.95 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
 
 class ClassicalModels():
 
@@ -302,6 +304,10 @@ class MLModels():
         self.forecasts_EN = {}
         self.EN_models = {}
 
+        self.error_metrics_SVR = {}
+        self.forecasts_SVR = {}
+        self.SVR_models = {}
+
     def get_data(self):
 
         '''Reads in csv from s3'''
@@ -367,6 +373,73 @@ class MLModels():
         r2 = r2_score(y['t_actual'], y['forecast'])
         mse = mean_squared_error(y['t_actual'], y['forecast'])
         return pd.Series(dict(r2=r2, mse=mse))
+
+    def explore_dim_reduce(self, maxlags):
+    
+        '''Explores dimensionality reduction on stationary, transformed data for potential use in pipeline before supervised model training.'''
+
+        exp_var = []
+        for lag_val in range(1, 3):
+
+            Y = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, -1]
+            X = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, 0:-2]
+            dates = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, -2]
+            
+            # Get the number of initial training observations
+            nobs = len(Y)
+            n_init_training = int(nobs * VALIDATION_SAMPLE_PERCENT)
+            
+            for time_step in range(0, (nobs-n_init_training-1)):
+                scaler_X, scaler_y = StandardScaler(), StandardScaler()
+
+                # Create model for training sample, gridsearch and fit parameters
+                training_X, training_Y = X.iloc[:n_init_training+time_step], Y.iloc[:n_init_training+time_step]
+                training_X_preprocessed, training_Y_preprocessed = pd.DataFrame(scaler_X.fit_transform(training_X.values)), pd.DataFrame(scaler_y.fit_transform(training_Y.values.reshape(-1, 1)))
+                
+                for N_COMP in range(1, 3):
+                    reducer_X = umap.UMAP(random_state=42, n_components=N_COMP)
+                    reducer_X.fit(training_X_preprocessed)
+                    embedding = reducer_X.transform(training_X_preprocessed)
+
+                    reg = LinearRegression().fit(embedding, training_Y_preprocessed)
+                    R2 = reg.score(embedding, training_Y_preprocessed)
+                    exp_var.append({
+                        'n_comp': N_COMP,
+                        'lag': lag_val,
+                        'time_step': time_step,
+                        'R2': R2
+                    })
+
+                if time_step == (nobs-n_init_training-1):
+                    fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
+                    colormap = plt.get_cmap('seismic')
+                    ax1.set_prop_cycle(cycler('color', [colormap(k) for k in np.linspace(0, 1, 4)]) +
+                            cycler('linestyle', ['-', ':', '-', ':']))
+                    for nn in range(0, N_COMP):
+                        plt.plot(pd.to_datetime(dates.iloc[0:n_init_training+time_step]), embedding[:, nn], linewidth=0.5)
+    
+                    plt.title('UMAP projection of the dataset', fontsize=24)
+                    fig.savefig(Path(self.graphics_path, 'umap_projection').with_suffix('.png'))
+
+        summary_exp_var = pd.DataFrame(exp_var)
+        summary_exp_var = summary_exp_var.groupby(['n_comp', 'lag'])['R2'].mean().reset_index()
+
+        fig, ax2 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
+        colormap = plt.get_cmap('seismic')
+        ax2.set_prop_cycle(cycler('color', [colormap(k) for k in np.linspace(0, 1, 4)]) +
+                cycler('linestyle', ['-', ':', '-', ':']))
+
+        for ll in range(1, 3):
+            lag = summary_exp_var[summary_exp_var.lag == ll]
+            plt.plot(lag['n_comp'], lag['R2'], '-o', linewidth=0.5, label='lag='+str(ll))
+
+        plt.title('Explained Variance of Y using UMAP at Various n_components / lags', fontsize=24)
+        plt.legend()
+        plt.xlabel('Number of UMAP components')
+        plt.ylabel('Explained variance of Y')
+        fig.savefig(Path(self.graphics_path, 'dimension_reduction_selection').with_suffix('.png'))
+
+        self.logger.info('ran uniform manifold approximation/projection')
 
     def train_elastic_net(self, maxlags):
 
@@ -473,9 +546,9 @@ class MLModels():
 
         self.logger.info('plotted and saved png files of error metrics in /reports/figures for elastic net hyperparameters')
 
-    def train_SVM_reg(self, maxlags):
+    def train_SVR_reg(self, maxlags):
 
-        '''Trains support vector machine regression models using walk forward validation across a range of hyperparameters C, gamma, and lag order. For each lag value, steps through time
+        '''Trains support vector regression models using walk forward validation across a range of hyperparameters C, gamma, and lag order. For each lag value, steps through time
         steps and trains C/gamma variations, stores forecasts. Calculates MSE for each C/gamma/lag order order possibility. Manual tuning on optimal kernel done non-programmatically'''
         forecasts = {
             'C':  list(),
@@ -484,11 +557,11 @@ class MLModels():
             'forecast': list(),
             'forecast_t': list()
         }
-        SVM_params = {
-            'C': np.linspace(0.8, 1.0, 11),#np.linspace(0.1,1,11),
-            'gamma': np.linspace(0.1,1,11)
+        SVR_params = {
+            'C': [1e3, 1e4, 1e5, 1e6],
+            'gamma': [1e-3, 1e-4, 1e-5]
         }
-        SVM_models = list()
+        SVR_models = list()
 
         for lag_val in range(1, maxlags+1):
 
@@ -509,8 +582,8 @@ class MLModels():
                 test_X = X.iloc[n_init_training+1+time_step, :]
                 test_X_preprocessed = pd.DataFrame(scaler_X.transform(test_X.values.reshape(1, -1)))
                 
-                for ratios in itertools.product(SVM_params['C'], SVM_params['gamma']):
-                    regr = SVR(random_state=42, C=ratios[0], gamma=ratios[1])
+                for ratios in itertools.product(SVR_params['C'], SVR_params['gamma']):
+                    regr = SVR(C=ratios[0], gamma=ratios[1])
                     regr.fit(training_X_preprocessed, training_Y_preprocessed)
 
                     values = [
@@ -524,26 +597,27 @@ class MLModels():
 
                     # save models
                     if time_step == (nobs-n_init_training-2):
-                        SVM_models.append({
+                        SVR_models.append({
                             'C': ratios[0],
                             'gamma': ratios[1],
                             'lag': lag_val,
                             'model': regr
                             })
-            self.logger.info('completed a full hyperparamter search / training for a lag val of SVM')
+            self.logger.info('completed a full hyperparamter search / training for a lag val of SVR')
 
         forecasts = pd.DataFrame(forecasts)
         actuals = pd.concat([Y, dates], axis=1)
         actuals.columns = ['t_actual', 'sasdate']
-        self.SVM_forecasts = pd.merge(forecasts, actuals, left_on='forecast_t', right_on='sasdate', how='left')
+        self.SVR_forecasts = pd.merge(forecasts, actuals, left_on='forecast_t', right_on='sasdate', how='left')
         
-        self.SVM_forecasts['forecast_t'] = pd.to_datetime(self.EN_forecasts['forecast_t'])
+        self.SVR_forecasts['forecast_t'] = pd.to_datetime(self.SVR_forecasts['forecast_t'])
         # error storage
-        self.error_metrics_SVM = self.SVM_forecasts.groupby(['C', 'gamma', 'lag']).apply(self._mse).reset_index()
+        self.error_metrics_SVR = self.SVR_forecasts.groupby(['C', 'gamma', 'lag']).apply(self._mse).reset_index()
+        print(self.error_metrics_SVR)
         # save dictionary of models to disk for later use
-        with open(Path(self.models_path, 'SVM_reg_models').with_suffix('.pkl'), 'wb') as handle:
-            pickle.dump(self.SVM_models, handle)
-        with open(Path(self.models_path, 'scaler_SVM_reg').with_suffix('.pkl'), 'wb') as handle:
+        with open(Path(self.models_path, 'SVR_reg_models').with_suffix('.pkl'), 'wb') as handle:
+            pickle.dump(self.SVR_models, handle)
+        with open(Path(self.models_path, 'scaler_SVR_reg').with_suffix('.pkl'), 'wb') as handle:
             pickle.dump(scaler_X, handle) # last one in memory; full val/train sample
 
     def plot_ML_forecasts(self):
@@ -582,17 +656,18 @@ class MLModels():
         fig.savefig(pth)
         self.logger.info('plotted and saved png file in /reports/figures of forecasts of ML models vs. actuals')
 
-
     def execute_analysis(self):
 
         '''Executes training, scaling, tuning, and error analysis for ml models, saves final models to disk.
         All model optimizition is done programmatically with hyperparameter grid search (unlike manual selection of lag order in Classical models)'''
         self.get_data()
         self.splice_test_data()
-        self.reframe_train_val_df(maxlags=2)
-        self.train_elastic_net(maxlags=2)
-        self.plot_EN_metrics(maxlags=2)
-        self.plot_ML_forecasts()
+        self.reframe_train_val_df(maxlags=4)
+        self.explore_dim_reduce(maxlags=1)
+        #self.train_elastic_net(maxlags=2)
+        #self.plot_EN_metrics(maxlags=2)
+        #self.train_SVR_reg(maxlags=2)
+        #self.plot_ML_forecasts()
 
 def main():
     """ Runs training of machine learning models and hyperparameter tuning.
