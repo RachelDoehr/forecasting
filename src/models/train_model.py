@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 import itertools
 from matplotlib import cm
-from sklearn.linear_model import ElasticNet, SGDRegressor, LinearRegression
+from sklearn.linear_model import ElasticNet, SGDRegressor, LinearRegression, Ridge
 from pathlib import Path
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 import pickle
 from sklearn.metrics import explained_variance_score, mean_squared_error, r2_score
@@ -28,7 +29,7 @@ from pandas.plotting import register_matplotlib_converters
 
 BUCKET = 'macro-forecasting1301' # s3 bucket name
 TRAINING_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of sample to use as training/val. 1-% is test set.
-VALIDATION_SAMPLE_PERCENT = 0.95 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
+VALIDATION_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
 
 class ClassicalModels():
 
@@ -304,9 +305,9 @@ class MLModels():
         self.forecasts_EN = {}
         self.EN_models = {}
 
-        self.error_metrics_SVR = {}
-        self.forecasts_SVR = {}
-        self.SVR_models = {}
+        self.error_metrics_RF = {}
+        self.forecasts_RF = {}
+        self.RF_models = {}
 
     def get_data(self):
 
@@ -410,7 +411,7 @@ class MLModels():
                         'R2': R2
                     })
 
-                if time_step == (nobs-n_init_training-1):
+                if time_step == (nobs-n_init_training-2):
                     fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
                     colormap = plt.get_cmap('seismic')
                     ax1.set_prop_cycle(cycler('color', [colormap(k) for k in np.linspace(0, 1, 4)]) +
@@ -453,15 +454,18 @@ class MLModels():
             'forecast_t': list()
         }
         EN_params = {
-            'l1_ratio': np.linspace(0.8, 1.0, 11),#np.linspace(0.1,1,11),
-            'alpha': np.linspace(0.1,1,11)
+            'l1_ratio': np.linspace(0.001, 1.0, 11),#np.linspace(0.1,1,11),
+            'alpha': np.linspace(0.0001,1.0,11)
         }
         EN_models = list()
+        scaler_X, scaler_y = StandardScaler(), StandardScaler()
 
         for lag_val in range(1, maxlags+1):
 
             Y = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, -1]
             X = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, 0:-2]
+            X = X[[c for c in X.columns if 'var94' in c or 'var8(t-1)' in c or 'var75(t-1)' in c]]
+
             dates = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, -2]
             
             # Get the number of initial training observations
@@ -469,8 +473,7 @@ class MLModels():
             n_init_training = int(nobs * VALIDATION_SAMPLE_PERCENT)
             
             for time_step in range(0, (nobs-n_init_training-1)):
-                scaler_X, scaler_y = StandardScaler(), StandardScaler()
-
+                
                 # Create model for training sample, gridsearch and fit parameters
                 training_X, training_Y = X.iloc[:n_init_training+time_step], Y.iloc[:n_init_training+time_step]
                 training_X_preprocessed, training_Y_preprocessed = pd.DataFrame(scaler_X.fit_transform(training_X.values)), pd.DataFrame(scaler_y.fit_transform(training_Y.values.reshape(-1, 1)))
@@ -478,7 +481,7 @@ class MLModels():
                 test_X_preprocessed = pd.DataFrame(scaler_X.transform(test_X.values.reshape(1, -1)))
                 
                 for ratios in itertools.product(EN_params['l1_ratio'], EN_params['alpha']):
-                    regr = ElasticNet(random_state=42, l1_ratio=ratios[0], alpha=ratios[1], warm_start=True, fit_intercept=True)
+                    regr = ElasticNet(random_state=42, l1_ratio=ratios[0], alpha=ratios[1], fit_intercept=False)
                     regr.fit(training_X_preprocessed, training_Y_preprocessed)
 
                     values = [
@@ -545,28 +548,31 @@ class MLModels():
             plt.close()
 
         self.logger.info('plotted and saved png files of error metrics in /reports/figures for elastic net hyperparameters')
-
-    def train_SVR_reg(self, maxlags):
-
-        '''Trains support vector regression models using walk forward validation across a range of hyperparameters C, gamma, and lag order. For each lag value, steps through time
-        steps and trains C/gamma variations, stores forecasts. Calculates MSE for each C/gamma/lag order order possibility. Manual tuning on optimal kernel done non-programmatically'''
+ 
+    def train_random_forests(self, maxlags):
+    
+        '''Trains random forests models using walk forward validation across a range of hyperparameters max depth, estimator count, and lag order. For each lag value, steps through time
+        steps and trains depth/estimator variations, stores forecasts. Calculates MSE for each depth/estimators/lag order possibility.'''
         forecasts = {
-            'C':  list(),
-            'gamma': list(),
+            'max_depth':  list(),
+            'estimator_count': list(),
             'lag': list(),
             'forecast': list(),
             'forecast_t': list()
         }
-        SVR_params = {
-            'C': [1e3, 1e4, 1e5, 1e6],
-            'gamma': [1e-3, 1e-4, 1e-5]
+        RF_params = {
+            'max_depth': np.linspace(4, 7, 3),#np.linspace(0.1,1,11),
+            'estimator_count': np.linspace(1, 3, 3)
         }
-        SVR_models = list()
+        RF_models = list()
+        scaler_X, scaler_y = StandardScaler(), StandardScaler()
 
         for lag_val in range(1, maxlags+1):
 
             Y = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, -1]
             X = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, 0:-2]
+            X = X[[c for c in X.columns if 'var94' in c or 'var8(t-1)' in c or 'var75(t-1)']]
+
             dates = self.reframed_dfs['lag_'+str(lag_val)].iloc[:, -2]
             
             # Get the number of initial training observations
@@ -574,17 +580,16 @@ class MLModels():
             n_init_training = int(nobs * VALIDATION_SAMPLE_PERCENT)
             
             for time_step in range(0, (nobs-n_init_training-1)):
-                scaler_X, scaler_y = StandardScaler(), StandardScaler()
-
+                
                 # Create model for training sample, gridsearch and fit parameters
                 training_X, training_Y = X.iloc[:n_init_training+time_step], Y.iloc[:n_init_training+time_step]
                 training_X_preprocessed, training_Y_preprocessed = pd.DataFrame(scaler_X.fit_transform(training_X.values)), pd.DataFrame(scaler_y.fit_transform(training_Y.values.reshape(-1, 1)))
                 test_X = X.iloc[n_init_training+1+time_step, :]
                 test_X_preprocessed = pd.DataFrame(scaler_X.transform(test_X.values.reshape(1, -1)))
                 
-                for ratios in itertools.product(SVR_params['C'], SVR_params['gamma']):
-                    regr = SVR(C=ratios[0], gamma=ratios[1])
-                    regr.fit(training_X_preprocessed, training_Y_preprocessed)
+                for ratios in itertools.product(RF_params['max_depth'], RF_params['estimator_count']):
+                    regr = RandomForestRegressor(random_state=42, max_depth=int(ratios[0]), n_estimators=int(ratios[1]), bootstrap=True, warm_start=True)
+                    regr.fit(training_X_preprocessed, training_Y_preprocessed.values[:, 0])
 
                     values = [
                         ratios[0],
@@ -593,32 +598,65 @@ class MLModels():
                         dates.iloc[n_init_training+1+time_step],
                         scaler_y.inverse_transform(regr.predict(test_X_preprocessed))[0]
                     ]
-                    [forecasts[k].append(v) for k, v in zip(['C', 'gamma', 'lag', 'forecast_t', 'forecast'], values)]
+                    [forecasts[k].append(v) for k, v in zip(['max_depth', 'estimator_count', 'lag', 'forecast_t', 'forecast'], values)]
 
                     # save models
                     if time_step == (nobs-n_init_training-2):
-                        SVR_models.append({
-                            'C': ratios[0],
-                            'gamma': ratios[1],
+                        RF_models.append({
+                            'max_depth': ratios[0],
+                            'estimator_count': ratios[1],
                             'lag': lag_val,
                             'model': regr
                             })
-            self.logger.info('completed a full hyperparamter search / training for a lag val of SVR')
+                print('trained one time step for hyperparameters grid, time step=', time_step, ' out of: ', (nobs-n_init_training-1))
+            self.logger.info('completed a full hyperparamter search / training for a lag val of random forests')
 
         forecasts = pd.DataFrame(forecasts)
         actuals = pd.concat([Y, dates], axis=1)
         actuals.columns = ['t_actual', 'sasdate']
-        self.SVR_forecasts = pd.merge(forecasts, actuals, left_on='forecast_t', right_on='sasdate', how='left')
+        self.RF_forecasts = pd.merge(forecasts, actuals, left_on='forecast_t', right_on='sasdate', how='left')
         
-        self.SVR_forecasts['forecast_t'] = pd.to_datetime(self.SVR_forecasts['forecast_t'])
+        self.RF_forecasts['forecast_t'] = pd.to_datetime(self.RF_forecasts['forecast_t'])
         # error storage
-        self.error_metrics_SVR = self.SVR_forecasts.groupby(['C', 'gamma', 'lag']).apply(self._mse).reset_index()
-        print(self.error_metrics_SVR)
+        self.error_metrics_RF = self.RF_forecasts.groupby(['max_depth', 'estimator_count', 'lag']).apply(self._mse).reset_index()
         # save dictionary of models to disk for later use
-        with open(Path(self.models_path, 'SVR_reg_models').with_suffix('.pkl'), 'wb') as handle:
-            pickle.dump(self.SVR_models, handle)
-        with open(Path(self.models_path, 'scaler_SVR_reg').with_suffix('.pkl'), 'wb') as handle:
+        print(self.error_metrics_RF)
+        with open(Path(self.models_path, 'random_forests_models').with_suffix('.pkl'), 'wb') as handle:
+            pickle.dump(self.RF_models, handle)
+        with open(Path(self.models_path, 'scaler_random_forests').with_suffix('.pkl'), 'wb') as handle:
             pickle.dump(scaler_X, handle) # last one in memory; full val/train sample
+
+    def plot_RF_metrics(self, maxlags):
+
+        '''Plots the error metrics of elastic nets, 1 plot per lag that shows the l1/l2 MSE'''
+        for jj in range(1, maxlags+1):
+
+            fig = plt.figure()
+            one_lag = self.error_metrics_EN[self.error_metrics_EN.lag == jj]
+            X_one, Y_one = np.array(one_lag.l1_ratio), np.array(one_lag.alpha)
+            Z_one = np.array(one_lag.mse)
+
+            ax = fig.gca(projection='3d')
+
+            # Plot the surface.
+            surf1 = ax.plot_trisurf(X_one, Y_one, Z_one, cmap=cm.coolwarm,
+                                linewidth=0, antialiased=False, alpha=0.8)
+
+            # Add a color bar which maps values to colors.
+            fig.colorbar(surf1, shrink=0.5, aspect=5)
+
+            plt.xlabel('l1 ratio', fontsize=9)
+            plt.ylabel('l2 ratio (alpha)', fontsize=9)
+            plt.suptitle('Grid search for elastic net, lag order=' + str(jj))
+            plt.title('MSE')
+
+            fig.tight_layout()
+            plt.legend()
+            pth = Path(self.graphics_path, 'elasticnet_hyperparams_'+str(jj)).with_suffix('.png')
+            fig.savefig(pth)
+            plt.close()
+
+        self.logger.info('plotted and saved png files of error metrics in /reports/figures for elastic net hyperparameters')
 
     def plot_ML_forecasts(self):
 
@@ -662,11 +700,11 @@ class MLModels():
         All model optimizition is done programmatically with hyperparameter grid search (unlike manual selection of lag order in Classical models)'''
         self.get_data()
         self.splice_test_data()
-        self.reframe_train_val_df(maxlags=4)
-        self.explore_dim_reduce(maxlags=1)
-        #self.train_elastic_net(maxlags=2)
-        #self.plot_EN_metrics(maxlags=2)
-        #self.train_SVR_reg(maxlags=2)
+        self.reframe_train_val_df(maxlags=20)
+        #self.explore_dim_reduce(maxlags=1)
+        #self.train_elastic_net(maxlags=9)
+        #self.plot_EN_metrics(maxlags=9)
+        self.train_random_forests(maxlags=2)
         #self.plot_ML_forecasts()
 
 def main():
