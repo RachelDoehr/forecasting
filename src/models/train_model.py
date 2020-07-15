@@ -3,6 +3,7 @@ import itertools
 from matplotlib import cm
 from sklearn.linear_model import ElasticNet, SGDRegressor, LinearRegression, Ridge
 from pathlib import Path
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.kernel_ridge import KernelRidge
@@ -209,6 +210,132 @@ class ClassicalModels():
         with open(pth, 'wb') as handle:
             pickle.dump(self.standard_scaler_Markov, handle)
 
+    def train_exponential_smoother(self):
+        
+        '''Trains Holt's Exponential Smoothing model on univariate series.
+        Allows for dampened trend, no seasonality. Uses walk forward validation to tune lag order similar to AR.'''
+        self.error_metrics_exp = {}
+        self.forecasts_exp = {}
+        self.EXP_models = {}
+
+        endog = self.train_val_df['BAAFFM']
+        forecasts = {}
+        
+        # Get the number of initial training observations
+        nobs = len(endog)
+        n_init_training = int(nobs * VALIDATION_SAMPLE_PERCENT) 
+        scaler_y = StandardScaler()
+
+        # Create model for initial training sample, fit parameters
+        training_endog = endog.iloc[:n_init_training]
+        training_endog_preprocessed = pd.DataFrame(scaler_y.fit_transform(training_endog.values.reshape(-1, 1)))
+        mod = ExponentialSmoothing(training_endog_preprocessed,
+                                    trend='add',
+                                    seasonal=None,
+                                    damped=True,
+                                    )
+        res = mod.fit()
+
+        # Save initial forecast
+        forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler_y.inverse_transform(res.predict())[len(res.predict())-1]
+        # Step through the rest of the sample
+        for t in range(n_init_training, nobs):
+        
+            scaler_y = StandardScaler()
+            # Update the results by appending the next observation
+            endog_preprocessed = pd.DataFrame(scaler_y.fit_transform(endog.iloc[0:t+1].values.reshape(-1, 1))) # re fit
+            dates = pd.DataFrame(self.train_val_df.iloc[0:t+1, 1].values.reshape(-1, 1))
+
+            mod = ExponentialSmoothing(endog_preprocessed,
+                                    trend='add',
+                                    seasonal=None,
+                                    damped=True,
+                                    )
+            res = mod.fit()
+
+            # Save the new set of forecasts, inverse the scaler
+            forecasts[self.train_val_df.iloc[t, 1]] = scaler_y.inverse_transform(res.predict())[len(res.predict())-1]
+            # save the model at end of time series
+            if t == nobs-1:
+                self.EXP_models['exp_weigh_lag_struct'] = res
+                self.standard_scaler_Expsmooth = scaler_y
+        
+        # Combine all forecasts into a dataframe
+        forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
+        actuals = pd.concat([endog.tail(forecasts.shape[0]), dates.tail(forecasts.shape[0])], axis=1)
+        actuals.columns = ['t_actual', 'sasdate']
+        self.Expsmooth_fcasts = pd.merge(forecasts, actuals, on='sasdate', how='inner').dropna()
+        self.Expsmooth_fcasts['sasdate'] = pd.to_datetime(self.Expsmooth_fcasts['sasdate'])
+        
+        # error storage
+        self.error_metrics_exp['exp_weigh_lag_struct'] = mean_squared_error(self.Expsmooth_fcasts['t_actual'], self.Expsmooth_fcasts['t_forecast'])
+        # forecast storage
+        print('Exponential smoothing MSE: ', self.error_metrics_exp)
+        self.forecasts_exp['exp_weigh_lag_struct'] = {
+            'df': self.Expsmooth_fcasts
+        }
+        self.logger.info('completed training for Exponential Smoothing model')
+
+        # save dictionary of models to disk for later use
+        pth = Path(self.models_path, 'EXP_models').with_suffix('.pkl')
+        with open(pth, 'wb') as handle:
+            pickle.dump(self.EXP_models, handle)
+        pth = Path(self.models_path, 'scaler_ExponSmooth').with_suffix('.pkl')
+        with open(pth, 'wb') as handle:
+            pickle.dump(self.standard_scaler_Expsmooth, handle)
+
+    def train_ss_DFM(self):
+    
+        '''Trains Dynamic Factor model, including walk forward validation and standardization.
+        Optimizes lag number & factor number by calculating RMSE on validation set during walk-forward training.'''
+        self.error_metrics_DFM = {}
+        self.forecasts_DFM = {}
+
+        for ll in range(1, 2):
+
+            endog = self.train_val_df[['BAAFFM', 'INDPRO']]
+            forecasts = {}
+
+            # Get the number of initial training observations
+            nobs = len(endog)
+            n_init_training = int(nobs * 0.8)
+            scaler = StandardScaler()
+
+            # Create model for initial training sample, fit parameters
+            training_endog = endog.iloc[:n_init_training, :]
+            training_endog_preprocessed = pd.DataFrame(scaler.fit_transform(training_endog.values))
+            mod = sm.tsa.DynamicFactor(training_endog_preprocessed, k_factors=2, factor_order=ll) ######## CHECK IF YOU NEED ERROR ORDER TOO
+
+            res = mod.fit(low_memory=True)
+
+            # Save initial forecast
+            forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1][1]
+            # Step through the rest of the sample
+            for t in range(n_init_training, nobs):
+                # Update the results by appending the next observation
+                endog_preprocessed = pd.DataFrame(scaler.fit_transform(endog.iloc[:t+1, :].values)) # re fit
+                dates = pd.DataFrame(self.train_val_df.iloc[0:t+1, 1].values.reshape(-1, 1))
+    
+                mod = sm.tsa.DynamicFactor(endog_preprocessed, k_factors=2, factor_order=ll)
+                res = mod.fit(low_memory=True)
+                # Save the new set of forecasts, inverse the scaler
+                forecasts[self.train_val_df.iloc[t, 1]] = scaler.inverse_transform(res.predict())[len(res.predict())-1][1]
+        
+            # Combine all forecasts into a dataframe
+            forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
+            actuals = pd.concat([endog.tail(forecasts.shape[0]), dates.tail(forecasts.shape[0])], axis=1)
+            actuals.columns = ['t_actual', 'sasdate']
+            self.SS_DFM_forecasts = pd.merge(forecasts, actuals, on='sasdate', how='inner')
+            self.SS_DFM_forecasts['sasdate'] = pd.to_datetime(self.SS_DFM_forecasts['sasdate'])
+            # error storage
+            self.error_metrics_DFM[ll] = mean_squared_error(self.SS_DFM_forecasts['t_actual'], self.SS_DFM_forecasts['t_forecast'])
+            # forecast storage
+            self.forecasts_DFM['lag_'+str(ll)] = {
+                'df': self.SS_DFM_forecasts
+            }
+            self.logger.info('completed training for DFM model with order: '+str(ll)+' and 2 factors')
+
+
     def plot_errors_AR(self):
 
         '''For validation / lag tuning, plots the errors of the different lag terms of AR once trained'''
@@ -253,15 +380,17 @@ class ClassicalModels():
     def plot_forecasts_Classical(self, chosen_lag_AR, chosen_lag_Markov):
         
         '''Plots and reports forecats (t+1) for both classical models'''
-        df_Markov = self.forecasts_Markov['lag_'+str(chosen_lag_Markov)]['df']
+        #df_Markov = self.forecasts_Markov['lag_'+str(chosen_lag_Markov)]['df']
         df_AR = self.forecasts_AR['lag_'+str(chosen_lag_AR)]['df']
+        df_ExpSmo = self.forecasts_exp['exp_weigh_lag_struct']['df']
 
         # Plot Line1 (Left Y Axis)
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
         
         ax1.plot(df_AR['sasdate'], df_AR['t_actual'], color='dodgerblue', label='actual')
         ax1.plot(df_AR['sasdate'], df_AR['t_forecast'], color='navy', label=('state space AR, lag='+str(chosen_lag_AR)+' forecast'), linestyle=":")
-        ax1.plot(df_Markov['sasdate'], df_Markov['t_forecast'], color='crimson', label=('Markov switching model, lag='+str(chosen_lag_Markov)+' forecast'), linestyle=":")
+        #ax1.plot(df_Markov['sasdate'], df_Markov['t_forecast'], color='crimson', label=('Markov switching model, lag='+str(chosen_lag_Markov)+' forecast'), linestyle=":")
+        ax1.plot(df_ExpSmo['sasdate'], df_ExpSmo['t_forecast'], color='gray', label=('Exponential smoothing model forecast'), linestyle=":")
 
         # Decorations
         # ax1 (left Y axis)
@@ -281,11 +410,13 @@ class ClassicalModels():
     def execute_analysis(self):
         self.get_data()
         self.splice_test_data()
-        self.train_ss_AR()
-        self.plot_errors_AR()
-        self.train_MarkovSwitch_AR()
-        self.plot_errors_Markov()
-        self.plot_forecasts_Classical(chosen_lag_AR=9, chosen_lag_Markov=6)
+        #self.train_ss_AR()
+        #self.plot_errors_AR()
+        #self.train_MarkovSwitch_AR()
+        #self.plot_errors_Markov()
+        #self.train_exponential_smoother()
+        self.train_ss_DFM()
+        #self.plot_forecasts_Classical(chosen_lag_AR=9, chosen_lag_Markov=6)
 
 
 def main():
