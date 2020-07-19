@@ -12,6 +12,7 @@ import pandas as pd
 import statsmodels.api as sm
 from sklearn.preprocessing import StandardScaler
 import numpy as np
+import warnings
 from matplotlib import pyplot as plt
 
 pd.options.mode.chained_assignment = None  # default='warn'
@@ -25,8 +26,9 @@ class MSARExtension():
         
         self.model = fitted_statsmodel
         self.last_nobs = self.model.data.orig_endog.tail(fitted_statsmodel.order)
+        self.t_prob = self.model.filtered_marginal_probabilities.iloc[-1, :]
 
-    def _gen_perRegime_forecasts(self):
+    def _gen_per_regime_forecasts(self):
 
         '''Pull up fitted transition matrix of markov chain process'''
 
@@ -52,22 +54,50 @@ class MSARExtension():
         # also pull up transition matrix
         self.transition_matrix = parameters[parameters['param'].str.contains('p[', regex=False)]
     
-    def gen_forecasts(self):
+    def _error_failed_MLE_convergence(self):
+        
+        '''If the filtered predicted Markov state probabilities for time t are NaN due to non-convergence,
+        do not generate forecast.'''
+
+        if sum(self.t_prob.values) != 1.0:
+            warnings.warn("Warning..........due to MLE failure to converge, prob(S|Yt) NaN, yhat generated defaulting to 0.0")
+
+    def _update_transition_matrix(self):
+
+        '''Dynamically fills out the fitted Markov chain transition matrix so matrix contains full range of probabilities,
+        e.g. sum to 1.0 across the potential regimes/states.'''
+
+        tmp_mat1 = self.transition_matrix.iloc[0:int(self.transition_matrix.shape[0]/2), :].reset_index()
+        tmp_mat2 = self.transition_matrix.iloc[int(self.transition_matrix.shape[0]/2):, :].reset_index()
+
+        t_mat = pd.concat([tmp_mat1, tmp_mat2], axis=1, ignore_index=True)
+        t_mat['param'] = 'remaining_p[]'
+        t_mat['estimate'] = 1.0 - (t_mat.iloc[:, 2] + t_mat.iloc[:, 5])
+        
+        self.transition_matrix = pd.concat([tmp_mat1, tmp_mat2, t_mat[['param', 'estimate']]], axis=0)[['param', 'estimate']]
+
+    def _gen_forecast(self):
 
         '''tbd'''
 
-        self._gen_perRegime_forecasts()
-        print(self.perRegime_forecasts)
+        self._error_failed_MLE_convergence()
+        self._gen_per_regime_forecasts()
+        self._update_transition_matrix()
 
-        t_prob = self.model.filtered_marginal_probabilities.iloc[-1, :]
-        print(t_prob)
+        t_yhat = pd.DataFrame(self.perRegime_forecasts, columns=['yhat'])
 
-        print(self.transition_matrix)
-        tmp_mat = self.transition_matrix.iloc[0:int(self.transition_matrix.shape[0]/2), :]
-        print(tmp_mat)
-
+        full_mat = pd.merge(self.transition_matrix, self.t_prob, how='left', left_index=True, right_index=True)
+        full_mat = pd.merge(full_mat, t_yhat, how='left', left_index=True, right_index=True)
+        full_mat['product'] = full_mat.iloc[:, 1] * full_mat.iloc[:, 2] * full_mat.iloc[:, 3]
         
+        self.fcast = full_mat['product'].sum()
 
+    def predict_out_of_sample(self):
+
+        '''Runs all necessary functions and returns the t+1 prediction'''
+
+        self._gen_forecast()
+        return self.fcast
 
 scaler = StandardScaler()
 # sample usage
@@ -75,9 +105,10 @@ dta = pd.read_csv('data.csv').iloc[0:480, :]
 b = scaler.fit_transform(dta.BAAFFM.values.reshape(-1, 1))
 b = b.ravel()
 dta_hamilton = pd.Series(b)
-mod_hamilton = sm.tsa.MarkovAutoregression(dta_hamilton, k_regimes=3, order=3, switching_variance=True)
+mod_hamilton = sm.tsa.MarkovAutoregression(dta_hamilton, k_regimes=3, order=2, switching_variance=True)
 res_hamilton = mod_hamilton.fit()
 
 OOSMSAR = MSARExtension(fitted_statsmodel=res_hamilton)
-OOSMSAR.gen_forecasts()
+forecast = OOSMSAR.predict_out_of_sample()
 
+print(forecast)
