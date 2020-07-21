@@ -31,6 +31,9 @@ import pandas as pd
 import numpy as np
 from pandas.plotting import register_matplotlib_converters
 
+# custom built class in /utils
+from MarkovExtension import MSARExtension
+
 BUCKET = 'macro-forecasting1301' # s3 bucket name
 TRAINING_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of sample to use as training/val. 1-% is test set.
 VALIDATION_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
@@ -182,13 +185,13 @@ class ClassicalModels():
                                         switching_variance=True,
                                         )
             
-            np.random.seed(123)
             res = mod.fit(search_reps=20)
+            res_extended = MSARExtension(res) # pass the trained model to the custom out-of-sample prediction class given statsmodels has not implemented yet:
+            # https://github.com/statsmodels/statsmodels/blob/ebe5e76c6c8055dddb247f7eff174c959acc61d2/statsmodels/tsa/regime_switching/markov_switching.py#L702-L703
+            yhat = res_extended.predict_out_of_sample()
 
             # Save initial forecast
-            print(training_endog_preprocessed)
-            print(res.predict(start=0, end=382, probabilities='smoothed', conditional=1))
-            forecasts[self.train_val_df.iloc[n_init_training, 1]] = scaler_y.inverse_transform(res.predict(start=len(training_endog_preprocessed), end=len(training_endog_preprocessed), probabilities='predicted'))[0]
+            forecasts[self.train_val_df.iloc[n_init_training, 1]] = scaler_y.inverse_transform(yhat.ravel())[0]
             # Step through the rest of the sample
             for t in range(n_init_training, nobs-1):
                 scaler_y = StandardScaler()
@@ -201,9 +204,12 @@ class ClassicalModels():
                                         switching_variance=True
                 )
                 res = mod.fit(search_reps=20)
+                res_extended = MSARExtension(res)
+                yhat = res_extended.predict_out_of_sample()
 
                 # Save the new set of forecasts, inverse the scaler
-                forecasts[self.train_val_df.iloc[t+1, 1]] = scaler_y.inverse_transform(res.predict(start=len(endog_preprocessed), end=len(endog_preprocessed), probabilities='predicted'))[0]
+                print(scaler_y.inverse_transform(yhat.ravel())[0])
+                forecasts[self.train_val_df.iloc[t+1, 1]] = scaler_y.inverse_transform(yhat.ravel())[0]
                 # save the model at end of time series
                 if t == nobs-2:
                     self.MKV_models['lag_'+str(ll)] = res
@@ -224,7 +230,7 @@ class ClassicalModels():
             }
             self.logger.info('completed training for Markov Switching AR model with lag: '+str(ll))
         
-        [__train_one_lag(lag_value) for lag_value in range(2, 7)]
+        [__train_one_lag(lag_value) for lag_value in range(2, 6)]
 
         # save dictionary of models to disk for later use
         pth = Path(self.models_path, 'MKV_models').with_suffix('.pkl')
@@ -460,7 +466,7 @@ class ClassicalModels():
         #self.train_ss_AR()
         #self.plot_errors_AR()
         self.train_MarkovSwitch_AR()
-        #self.plot_errors_Markov()
+        self.plot_errors_Markov()
         #self.train_exponential_smoother()
         #self.train_ss_DFM()
         #self.plot_forecasts_Classical(chosen_lag_AR=9, chosen_lag_Markov=6, chosen_lag_DFM=2)
