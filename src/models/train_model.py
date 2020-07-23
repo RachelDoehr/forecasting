@@ -61,17 +61,8 @@ class ClassicalModels():
         '''Reads in csv from s3'''
         obj = self.s3_client.get_object(Bucket=BUCKET, Key='features.csv')
         self.features_df = pd.read_csv(io.BytesIO(obj['Body'].read()))
+        self.train_val_df = self.features_df.copy()
         self.logger.info('loaded data...')
-
-    def splice_test_data(self):
-
-        '''Sets aside test data up front, saves to s3 for evaluation later. Remainder will be used in walk-forward validation to train+tune parameters.'''
-        nobs = len(self.features_df)
-        n_init_training_val = int(nobs * TRAINING_SAMPLE_PERCENT)
-        self.test_df = self.features_df.iloc[n_init_training_val:, :]
-        self.train_val_df = self.features_df.iloc[0:n_init_training_val, :]
-        pth = Path(self.data_path, 'test_classical').with_suffix('.csv')
-        self.test_df.to_csv(pth)
 
     def examine_autocorr_stationary(self):
 
@@ -377,7 +368,7 @@ class ClassicalModels():
 
     def compare_error_forecasts(self, chosen_lag_AR, chosen_lag_Markov):
 
-        '''Creates a bar chart to compare the forecasting abilities of MS-AR model to others, on 
+        '''Creates charts to compare the forecasting abilities of MS-AR model to others, on 
         an aggregate time period as well as during recessions vs. expansions.'''
 
         df_M = self.forecasts_Markov['lag_'+str(chosen_lag_Markov)]['df']
@@ -398,21 +389,15 @@ class ClassicalModels():
         [_calc_mse(d) for d in [df_AR, df_E, df_M]]
         e = pd.DataFrame(errors)
         e['model'] = ['Autoregression', 'Exponential Smoothing', 'Markov Autoregression']
-
-        left_label = [str(c) + ', '+ str(round(y)) for c, y in zip(e.model, e['expansion'])]
-        right_label = [str(c) + ', '+ str(round(y)) for c, y in zip(e.model, e['recession'])]
-        klass = ['red' if (y1-y2) < 0 else 'green' for y1, y2 in zip(e['expansion'], e['recession'])]
-
         # draw line
         def newline(p1, p2, color='black'):
             ax = plt.gca()
-            l = mlines.Line2D([p1[0],p2[0]], [p1[1],p2[1]], color='red' if p1[1]-p2[1] > 0 else 'green', marker='o', markersize=6)
+            l = mlines.Line2D([p1[0],p2[0]], [p1[1],p2[1]], color='blue', marker='o', markersize=6)
             ax.add_line(l)
             return l
 
         fig, ax = plt.subplots(1,1,figsize=(14, 14), dpi= 80)
 
-        # Vertical Lines
         ax.vlines(x=1, ymin=0.0003, ymax=0.00055, color='black', alpha=0.7, linewidth=1, linestyles='dotted')
         ax.vlines(x=3, ymin=0.0003, ymax=0.00055, color='black', alpha=0.7, linewidth=1, linestyles='dotted')
 
@@ -436,8 +421,6 @@ class ClassicalModels():
         ax.set_xticks([1,3])
         ax.set_xticklabels(["Expansion", "Recession"])
         plt.yticks(np.arange(0.0003, 0.00055, 0.000025), fontsize=12)
-
-        # Lighten borders
         plt.gca().spines["top"].set_alpha(.0)
         plt.gca().spines["bottom"].set_alpha(.0)
         plt.gca().spines["right"].set_alpha(.0)
@@ -448,16 +431,12 @@ class ClassicalModels():
         plt.close()
 
         # aggregate time period
-        fig2, ax2 = plt.subplots(1,1,figsize=(8, 8), dpi= 80)
-        x = e.model
-        mse = e.aggregate
-        x_pos = [i for i, _ in enumerate(x)]
-
-        plt.bar(x_pos, mse, color='deepskyblue')
-        plt.xlabel("Model")
-        plt.ylabel("MSE: t+1 forecasts, out-of-sample")
-        plt.title("Comparison of Mean Squared Error for Entire Validation Time Period (incl. Recession+Expansion)")
-        plt.xticks(x_pos, x)
+        fig2 = plt.figure()
+        ax2 = fig.add_axes([0,0,1,1])
+        X = np.arange(4)
+        ax2.bar(X + 0.00, e.aggregate[0], color = 'b', width = 0.25)
+        ax2.bar(X + 0.25, e.aggregate[1], color = 'g', width = 0.25)
+        ax2.bar(X + 0.50, e.aggregate[2], color = 'r', width = 0.25)
 
         pth = Path(self.graphics_path, 'error_entire_time_period').with_suffix('.png')
         fig2.savefig(pth)
@@ -465,7 +444,6 @@ class ClassicalModels():
 
     def execute_analysis(self):
         self.get_data()
-        self.splice_test_data()
         #self.examine_autocorr_stationary()
         self.train_ss_AR()
         self.plot_errors_AR()
