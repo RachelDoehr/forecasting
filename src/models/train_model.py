@@ -11,6 +11,7 @@ import pickle
 from sklearn.metrics import explained_variance_score, mean_squared_error, r2_score
 from io import StringIO
 import logging
+import matplotlib.lines as mlines
 from statsmodels.tsa.stattools import adfuller
 from dotenv import find_dotenv, load_dotenv
 import boto3
@@ -37,6 +38,8 @@ from MarkovExtension import MSARExtension
 BUCKET = 'macro-forecasting1301' # s3 bucket name
 TRAINING_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of sample to use as training/val. 1-% is test set.
 VALIDATION_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
+VAR = 'CLAIMSx' # the variable of interest
+RECESSION_START = pd.Timestamp(2007, 1, 10) # NBER defined onset of recession period
 
 class ClassicalModels():
 
@@ -73,11 +76,11 @@ class ClassicalModels():
     def examine_autocorr_stationary(self):
 
         '''The stationarity procedures per the authors of this dataset should have de-trended / made stationary. Visual examination of autocorrelation.'''
-        yvar = self.train_val_df['BAAFFM']
+        yvar = self.train_val_df[VAR]
         fig = plot_acf(yvar, lags=36)
         pth = Path(self.graphics_path, 'acf_plot').with_suffix('.png')
         fig.savefig(pth)
-        self.logger.info('plotted and saved png file in /reports/figures of autocorrelation plot of BAAFFM')
+        self.logger.info('plotted and saved png file in /reports/figures of autocorrelation plot of variable')
 
         result = adfuller(yvar)
         print('ADF Statistic: %f' % result[0])
@@ -102,7 +105,7 @@ class ClassicalModels():
 
         def __train_one_lag(ll):
 
-            endog = self.train_val_df['INDPRO']
+            endog = self.train_val_df[VAR]
             forecasts = {}
             
             # Get the number of initial training observations
@@ -136,7 +139,7 @@ class ClassicalModels():
         
             # Combine all forecasts into a dataframe
             forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
-            actuals = self.train_val_df.tail(forecasts.shape[0])[['sasdate', 'INDPRO']]
+            actuals = self.train_val_df.tail(forecasts.shape[0])[['sasdate', VAR]]
             actuals.columns = ['sasdate', 't_actual']
             self.SS_AR_forecasts = pd.merge(forecasts, actuals, on='sasdate', how='inner')
             self.SS_AR_forecasts['sasdate'] = pd.to_datetime(self.SS_AR_forecasts['sasdate'])
@@ -154,9 +157,6 @@ class ClassicalModels():
         pth = Path(self.models_path, 'AR_models').with_suffix('.pkl')
         with open(pth, 'wb') as handle:
             pickle.dump(self.AR_models, handle)
-        pth = Path(self.models_path, 'scaler_AR').with_suffix('.pkl')
-        with open(pth, 'wb') as handle:
-            pickle.dump(self.scaler_AR, handle)
 
     def train_MarkovSwitch_AR(self):
     
@@ -168,7 +168,7 @@ class ClassicalModels():
 
         def __train_one_lag(ll):
 
-            endog = self.train_val_df['INDPRO']
+            endog = self.train_val_df[VAR]
             forecasts = {}
             
             # Get the number of initial training observations
@@ -182,7 +182,7 @@ class ClassicalModels():
             mod = sm.tsa.MarkovAutoregression(training_endog_preprocessed,
                                         k_regimes=2,
                                         order=ll,
-                                        switching_variance=True,
+                                        switching_variance=False,
                                         )
             
             res = mod.fit()
@@ -201,7 +201,7 @@ class ClassicalModels():
                 mod = sm.tsa.MarkovAutoregression(endog_preprocessed,
                                         k_regimes=2,
                                         order=ll,
-                                        switching_variance=True
+                                        switching_variance=False
                 )
                 res = mod.fit()
                 res_extended = MSARExtension(res)
@@ -216,7 +216,7 @@ class ClassicalModels():
         
             # Combine all forecasts into a dataframe
             forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
-            actuals = self.train_val_df.tail(forecasts.shape[0])[['sasdate', 'INDPRO']]
+            actuals = self.train_val_df.tail(forecasts.shape[0])[['sasdate', VAR]]
             actuals.columns = ['sasdate', 't_actual']
             self.Markov_fcasts = pd.merge(forecasts, actuals, on='sasdate', how='inner').dropna()
             self.Markov_fcasts['sasdate'] = pd.to_datetime(self.Markov_fcasts['sasdate'])
@@ -229,15 +229,12 @@ class ClassicalModels():
             }
             self.logger.info('completed training for Markov Switching AR model with lag: '+str(ll))
         
-        [__train_one_lag(lag_value) for lag_value in range(3, 4)]
+        [__train_one_lag(lag_value) for lag_value in range(2, 4)]
 
         # save dictionary of models to disk for later use
         pth = Path(self.models_path, 'MKV_models').with_suffix('.pkl')
         with open(pth, 'wb') as handle:
             pickle.dump(self.MKV_models, handle)
-        pth = Path(self.models_path, 'scaler_Markov').with_suffix('.pkl')
-        with open(pth, 'wb') as handle:
-            pickle.dump(self.standard_scaler_Markov, handle)
 
     def train_exponential_smoother(self):
         
@@ -247,7 +244,7 @@ class ClassicalModels():
         self.forecasts_exp = {}
         self.EXP_models = {}
 
-        endog = self.train_val_df['INDPRO']
+        endog = self.train_val_df[VAR]
         forecasts = {}
         
         # Get the number of initial training observations
@@ -259,13 +256,14 @@ class ClassicalModels():
         training_endog = endog.iloc[:n_init_training]
         training_endog_preprocessed = pd.DataFrame(scaler_y.fit_transform(training_endog.values.reshape(-1, 1)))
         mod = ExponentialSmoothing(training_endog_preprocessed,
-                                    trend=None,
-                                    seasonal=None
+                                    trend='add',
+                                    seasonal='add',
+                                    seasonal_periods=12
                                     )
         res = mod.fit()
 
         # Save initial forecast
-        forecasts[self.train_val_df.iloc[n_init_training-1, 1]] = scaler_y.inverse_transform(res.predict())[len(res.predict())-1]
+        forecasts[self.train_val_df.iloc[n_init_training+1, 1]] = scaler_y.inverse_transform(res.predict())[len(res.predict())-1]
         # Step through the rest of the sample
         for t in range(n_init_training, nobs-1):
         
@@ -274,17 +272,17 @@ class ClassicalModels():
             endog_preprocessed = pd.DataFrame(scaler_y.fit_transform(endog.iloc[0:t+1].values.reshape(-1, 1))) # re fit
             dates = pd.DataFrame(self.train_val_df.iloc[0:t+1, 1].values.reshape(-1, 1))
             mod = ExponentialSmoothing(endog_preprocessed,
-                                    trend=None,
-                                    seasonal=None
+                                    trend='add',
+                                    seasonal='add',
+                                    seasonal_periods=12
                                     )
             res = mod.fit()
 
             # Save the new set of forecasts, inverse the scaler
-            forecasts[self.train_val_df.iloc[t, 1]] = scaler_y.inverse_transform(res.predict())[len(res.predict())-1]
+            forecasts[self.train_val_df.iloc[t+1, 1]] = scaler_y.inverse_transform(res.predict())[len(res.predict())-1]
             # save the model at end of time series
             if t == nobs-1:
                 self.EXP_models['exp_weigh_lag_struct'] = res
-                self.standard_scaler_Expsmooth = scaler_y
         
         # Combine all forecasts into a dataframe
         forecasts = pd.DataFrame(forecasts.items(), columns=['sasdate', 't_forecast'])
@@ -296,7 +294,6 @@ class ClassicalModels():
         # error storage
         self.error_metrics_exp['exp_weigh_lag_struct'] = mean_squared_error(self.Expsmooth_fcasts['t_actual'], self.Expsmooth_fcasts['t_forecast'])
         # forecast storage
-        print('Exponential smoothing MSE: ', self.error_metrics_exp)
         self.forecasts_exp['exp_weigh_lag_struct'] = {
             'df': self.Expsmooth_fcasts
         }
@@ -306,9 +303,6 @@ class ClassicalModels():
         pth = Path(self.models_path, 'EXP_models').with_suffix('.pkl')
         with open(pth, 'wb') as handle:
             pickle.dump(self.EXP_models, handle)
-        pth = Path(self.models_path, 'scaler_ExponSmooth').with_suffix('.pkl')
-        with open(pth, 'wb') as handle:
-            pickle.dump(self.standard_scaler_Expsmooth, handle)
 
     def plot_errors_AR(self):
 
@@ -373,13 +367,101 @@ class ClassicalModels():
         ax1.set_ylabel('Industrial Production', color='black', fontsize=20)
         ax1.tick_params(axis='y', rotation=0, labelcolor='black' )
         ax1.grid(alpha=.4)
-        plt.title('Forecast vs. Realized Values: INDPRO', weight='bold')
+        plt.title('Forecast vs. Realized Values', weight='bold')
 
         fig.tight_layout()
         plt.legend()
         pth = Path(self.graphics_path, 'yhat_y_Classical').with_suffix('.png')
         fig.savefig(pth)
         self.logger.info('plotted and saved png file in /reports/figures of forecasts of Classical models vs. actuals')
+
+    def compare_error_forecasts(self, chosen_lag_AR, chosen_lag_Markov):
+
+        '''Creates a bar chart to compare the forecasting abilities of MS-AR model to others, on 
+        an aggregate time period as well as during recessions vs. expansions.'''
+
+        df_M = self.forecasts_Markov['lag_'+str(chosen_lag_Markov)]['df']
+        df_AR = self.forecasts_AR['lag_'+str(chosen_lag_AR)]['df']
+        df_E = self.forecasts_exp['exp_weigh_lag_struct']['df']
+
+        errors = []
+
+        def _calc_mse(df):
+
+            '''Helper function, calculates MSE by dataframe'''
+            errors.append({
+                'recession': mean_squared_error(df[df.sasdate >= RECESSION_START]['t_actual'], df[df.sasdate >= RECESSION_START]['t_forecast']),
+                'expansion': mean_squared_error(df[df.sasdate < RECESSION_START]['t_actual'], df[df.sasdate < RECESSION_START]['t_forecast']),
+                'aggregate': mean_squared_error(df['t_actual'], df['t_forecast'])
+            })
+        
+        [_calc_mse(d) for d in [df_AR, df_E, df_M]]
+        e = pd.DataFrame(errors)
+        e['model'] = ['Autoregression', 'Exponential Smoothing', 'Markov Autoregression']
+
+        left_label = [str(c) + ', '+ str(round(y)) for c, y in zip(e.model, e['expansion'])]
+        right_label = [str(c) + ', '+ str(round(y)) for c, y in zip(e.model, e['recession'])]
+        klass = ['red' if (y1-y2) < 0 else 'green' for y1, y2 in zip(e['expansion'], e['recession'])]
+
+        # draw line
+        def newline(p1, p2, color='black'):
+            ax = plt.gca()
+            l = mlines.Line2D([p1[0],p2[0]], [p1[1],p2[1]], color='red' if p1[1]-p2[1] > 0 else 'green', marker='o', markersize=6)
+            ax.add_line(l)
+            return l
+
+        fig, ax = plt.subplots(1,1,figsize=(14, 14), dpi= 80)
+
+        # Vertical Lines
+        ax.vlines(x=1, ymin=0.0003, ymax=0.00055, color='black', alpha=0.7, linewidth=1, linestyles='dotted')
+        ax.vlines(x=3, ymin=0.0003, ymax=0.00055, color='black', alpha=0.7, linewidth=1, linestyles='dotted')
+
+        # Points
+        ax.scatter(y=e['expansion'], x=np.repeat(1, e.shape[0]), s=10, color='black', alpha=0.7)
+        ax.scatter(y=e['recession'], x=np.repeat(3, e.shape[0]), s=10, color='black', alpha=0.7)
+
+        # Line Segmentsand Annotation
+        for p1, p2, c in zip(e['expansion'], e['recession'], e['model']):
+            newline([1,p1], [3,p2])
+            ax.text(1-0.05, p1, c + ', ' + str(round(p1, 5)), horizontalalignment='right', verticalalignment='center', fontdict={'size':14})
+            ax.text(3+0.05, p2, c + ', ' + str(round(p2, 5)), horizontalalignment='left', verticalalignment='center', fontdict={'size':14})
+
+        # 'Before' and 'After' Annotations
+        ax.text(1-0.05, 0.00054, 'EXPANSION', horizontalalignment='right', verticalalignment='center', fontdict={'size':18, 'weight':700})
+        ax.text(3+0.05, 0.00054, 'RECESSION', horizontalalignment='left', verticalalignment='center', fontdict={'size':18, 'weight':700})
+
+        # Decoration
+        ax.set_title("Slopechart: Comparing t+1 Forecast MSE between Economic Expansions ('normalcy') vs Recession ('shock')", fontdict={'size':16})
+        ax.set(xlim=(0,4), ylim=(0.0003,0.00055), ylabel='Mean Squared Error on t+1 out-of-sample forecasts')
+        ax.set_xticks([1,3])
+        ax.set_xticklabels(["Expansion", "Recession"])
+        plt.yticks(np.arange(0.0003, 0.00055, 0.000025), fontsize=12)
+
+        # Lighten borders
+        plt.gca().spines["top"].set_alpha(.0)
+        plt.gca().spines["bottom"].set_alpha(.0)
+        plt.gca().spines["right"].set_alpha(.0)
+        plt.gca().spines["left"].set_alpha(.0)
+
+        pth = Path(self.graphics_path, 'error_summary').with_suffix('.png')
+        fig.savefig(pth)
+        plt.close()
+
+        # aggregate time period
+        fig2, ax2 = plt.subplots(1,1,figsize=(8, 8), dpi= 80)
+        x = e.model
+        mse = e.aggregate
+        x_pos = [i for i, _ in enumerate(x)]
+
+        plt.bar(x_pos, mse, color='deepskyblue')
+        plt.xlabel("Model")
+        plt.ylabel("MSE: t+1 forecasts, out-of-sample")
+        plt.title("Comparison of Mean Squared Error for Entire Validation Time Period (incl. Recession+Expansion)")
+        plt.xticks(x_pos, x)
+
+        pth = Path(self.graphics_path, 'error_entire_time_period').with_suffix('.png')
+        fig2.savefig(pth)
+        self.logger.info('plotted and saved error metric comparison in /reports/figures of forecasts of Classical models vs. actuals')
 
     def execute_analysis(self):
         self.get_data()
@@ -391,10 +473,10 @@ class ClassicalModels():
         self.plot_errors_Markov()
         self.train_exponential_smoother()
         self.plot_forecasts_Classical(chosen_lag_AR=3, chosen_lag_Markov=3)
-
+        self.compare_error_forecasts(chosen_lag_AR=3, chosen_lag_Markov=3)
 
 def main():
-    """ Runs training of machine learning models and hyperparameter tuning.
+    """ Runs training of models and hyperparameter tuning.
     """
     logger = logging.getLogger(__name__)
     logger.info('running classical models...')
