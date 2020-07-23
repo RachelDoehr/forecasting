@@ -176,7 +176,7 @@ class DatasetMaker():
         
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
 
-        ax1.fill_between(x, df['BAAFFM'], label='Baa-FF spread', alpha=0.4, color='dodgerblue')
+        ax1.fill_between(x, df['CLAIMSx'], label='Unemployment Claims', alpha=0.4, color='dodgerblue')
         
         # Decorations
         ax1.set_xlabel('Date', fontsize=20)
@@ -187,9 +187,9 @@ class DatasetMaker():
 
         fig.tight_layout()
         plt.legend()
-        plt.title('Moody’s Baa Corporate Bond Minus FEDFUNDS', fontsize=12, fontweight='bold')
+        plt.title('U.S. Monthly Unemployment Claims', fontsize=12, fontweight='bold')
         
-        pth = Path(self.graphics_path, 'dependent_var_time_series').with_suffix('.png')
+        pth = Path(self.graphics_path, 'y_var_time_series').with_suffix('.png')
         fig.savefig(pth)
 
     def final_prep_and_save(self):
