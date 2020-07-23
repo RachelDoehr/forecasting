@@ -37,7 +37,7 @@ from MarkovExtension import MSARExtension
 
 BUCKET = 'macro-forecasting1301' # s3 bucket name
 DATA_SAMPLE_PERCENT = 0.825 # for both classical and ml models, % of sample to use here. Looking at pre and during 2008 fin crisis
-VALIDATION_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
+VALIDATION_SAMPLE_PERCENT = 0.7 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
 VAR = 'CLAIMSx' # the variable of interest
 RECESSION_START = pd.Timestamp(2007, 1, 10) # NBER defined onset of recession period
 
@@ -404,8 +404,8 @@ class ClassicalModels():
 
         fig, ax = plt.subplots(1,1,figsize=(14, 14), dpi= 80)
 
-        ax.vlines(x=1, ymin=0.0003, ymax=0.00055, color='black', alpha=0.7, linewidth=1, linestyles='dotted')
-        ax.vlines(x=3, ymin=0.0003, ymax=0.00055, color='black', alpha=0.7, linewidth=1, linestyles='dotted')
+        ax.vlines(x=1, ymin=0.00025, ymax=0.00055, color='black', alpha=0.7, linewidth=1, linestyles='dotted')
+        ax.vlines(x=3, ymin=0.00025, ymax=0.00055, color='black', alpha=0.7, linewidth=1, linestyles='dotted')
 
         # Points
         ax.scatter(y=e['expansion'], x=np.repeat(1, e.shape[0]), s=10, color='black', alpha=0.7)
@@ -423,10 +423,10 @@ class ClassicalModels():
 
         # Decoration
         ax.set_title("Slopechart: Comparing t+1 Forecast MSE between Economic Expansions ('normalcy') vs Recession ('shock')", fontdict={'size':16})
-        ax.set(xlim=(0,4), ylim=(0.0003,0.00055), ylabel='Mean Squared Error on t+1 out-of-sample forecasts')
+        ax.set(xlim=(0,4), ylim=(0.00025,0.00055), ylabel='Mean Squared Error on t+1 out-of-sample forecasts')
         ax.set_xticks([1,3])
         ax.set_xticklabels(["Expansion", "Recession"])
-        plt.yticks(np.arange(0.0003, 0.00055, 0.000025), fontsize=12)
+        plt.yticks(np.arange(0.00025, 0.00055, 0.000025), fontsize=12)
         plt.gca().spines["top"].set_alpha(.0)
         plt.gca().spines["bottom"].set_alpha(.0)
         plt.gca().spines["right"].set_alpha(.0)
@@ -438,12 +438,12 @@ class ClassicalModels():
 
         # aggregate time period
         fig2 = plt.figure()
-        ax2 = fig.add_axes([0, 0, 1, 1])
+        ax2 = fig2.add_axes([0, 0, 1, 1])
         X = np.arange(4)
         y = e['aggregate']
         ax2.bar(X + 0.00, y[0], color = 'b', width = 0.25)
-        ax2.bar(X + 0.25, y[1], color = 'g', width = 0.25)
-        ax2.bar(X + 0.50, y[2], color = 'r', width = 0.25)
+        ax2.bar(X + 0.25, y[1], color = 'gray', width = 0.25)
+        ax2.bar(X + 0.50, y[2], color = 'crimson', width = 0.25)
 
         pth = Path(self.graphics_path, 'error_entire_time_period').with_suffix('.png')
         fig2.savefig(pth)
