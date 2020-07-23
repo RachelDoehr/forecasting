@@ -78,7 +78,7 @@ class MSARExtension():
 
         self._error_failed_MLE_convergence()
         self._gen_per_regime_forecasts()
-        self._update_transition_matrix()
+        self._update_transition_matrix() 
 
         t_yhat = pd.DataFrame(self.perRegime_forecasts, columns=['yhat'])
 

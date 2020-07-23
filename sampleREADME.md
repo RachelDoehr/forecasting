@@ -1,13 +1,19 @@
 
-![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/example_Markov_chain.gif?raw=true)
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/example_Markov_chain.gif?raw=true)
 
-# Repository Title Goes Here
+# Univariate Classical Models Out-of-Sample Forecasting
 
-> Subtitle or Short Description Goes Here
+## A custom extension of the statsmodels Markov Autoregression package for OOS forecasting
 
-> ideally one sentence
+**COMPARISON OF PERFORMANCE IN PREDICTING U.S. UNEMPLOYMENT CLAIMS IN 'NORMAL' AND 'SHOCK' TIME PERIODS**
 
-> include terms/tags that can be searched
+> Builds on the Markov AR available in the latest statsmodels package available <a href="https://www.statsmodels.org/stable/generated/statsmodels.tsa.regime_switching.markov_autoregression" target="_blank">here</a>
+
+> Model comparison to basic Autoregression and Holt's Exponential Smoothing
+
+> Mathematical approach continues the strategy used in statsmodels, e.g. Kim, Chang-Jin, and Charles R. Nelson. “State-Space Models with Regime Switching: Classical and Gibbs-Sampling Approaches with Applications”. MIT Press Books. The MIT Press.
+
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/markov_ar_specification.jpg?raw=true)
 
 **Badges will go here**
 
