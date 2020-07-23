@@ -76,13 +76,13 @@ The grouped nature of the variables can also be seen in a visual examination of 
 ![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/correlation_matrix_2.png?raw=true)
 
 
-Isolating the chosen variable of interest, unemployment claims:
+Isolating the chosen variable of interest, unemployment claims. The transformations to make stationary are kept separate from scaling done in train_model.py (e.g., the extreme outlier in Mar-2020 does not affect other months). In the walk-forward validation, the initial training sample is 1970 through late 1990's, while 1998-2007 is considered "normal" economic times, and late 2007-2010 is considered "shock/recession."
 
-![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/correlation_matrix_2.png?raw=true)
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/y_var_time_series.png?raw=true)
 
-- All the `code` required to get started
-- Images of what it should look like
 
+A visual examination of the lag structure using an ACF plot:
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/acf_plot.png?raw=true)
 
 ---
 
