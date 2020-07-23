@@ -1,5 +1,5 @@
 
-![grab-landing-page](https://github.com/winnie1312/grab/blob/master/grab-landingpage-winnie.gif)
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/example_Markov_chain.gif?raw=true)
 
 # Repository Title Goes Here
 
