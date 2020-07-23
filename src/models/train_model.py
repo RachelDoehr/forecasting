@@ -36,7 +36,7 @@ from pandas.plotting import register_matplotlib_converters
 from MarkovExtension import MSARExtension
 
 BUCKET = 'macro-forecasting1301' # s3 bucket name
-TRAINING_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of sample to use as training/val. 1-% is test set.
+DATA_SAMPLE_PERCENT = 0.825 # for both classical and ml models, % of sample to use here. Looking at pre and during 2008 fin crisis
 VALIDATION_SAMPLE_PERCENT = 0.8 # for both classical and ml models, % of the training data to use as validation set in walk-forward validation
 VAR = 'CLAIMSx' # the variable of interest
 RECESSION_START = pd.Timestamp(2007, 1, 10) # NBER defined onset of recession period
@@ -61,8 +61,14 @@ class ClassicalModels():
         '''Reads in csv from s3'''
         obj = self.s3_client.get_object(Bucket=BUCKET, Key='features.csv')
         self.features_df = pd.read_csv(io.BytesIO(obj['Body'].read()))
-        self.train_val_df = self.features_df.copy()
         self.logger.info('loaded data...')
+
+    def filter_data(self):	
+
+        '''Removes the post-08 data up front. Remainder will be used here for analysis using walk-forward validation.'''	
+        nobs = len(self.features_df)	
+        n_init_training_val = int(nobs * DATA_SAMPLE_PERCENT)	
+        self.train_val_df = self.features_df.iloc[0:n_init_training_val, :]
 
     def examine_autocorr_stationary(self):
 
@@ -432,11 +438,12 @@ class ClassicalModels():
 
         # aggregate time period
         fig2 = plt.figure()
-        ax2 = fig.add_axes([0,0,1,1])
+        ax2 = fig.add_axes([0, 0, 1, 1])
         X = np.arange(4)
-        ax2.bar(X + 0.00, e.aggregate[0], color = 'b', width = 0.25)
-        ax2.bar(X + 0.25, e.aggregate[1], color = 'g', width = 0.25)
-        ax2.bar(X + 0.50, e.aggregate[2], color = 'r', width = 0.25)
+        y = e['aggregate']
+        ax2.bar(X + 0.00, y[0], color = 'b', width = 0.25)
+        ax2.bar(X + 0.25, y[1], color = 'g', width = 0.25)
+        ax2.bar(X + 0.50, y[2], color = 'r', width = 0.25)
 
         pth = Path(self.graphics_path, 'error_entire_time_period').with_suffix('.png')
         fig2.savefig(pth)
@@ -444,6 +451,7 @@ class ClassicalModels():
 
     def execute_analysis(self):
         self.get_data()
+        self.filter_data()
         #self.examine_autocorr_stationary()
         self.train_ss_AR()
         self.plot_errors_AR()
