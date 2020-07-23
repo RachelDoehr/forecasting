@@ -3,7 +3,8 @@
 
 # Univariate Classical Models Out-of-Sample Forecasting
 
-## A custom extension of the statsmodels Markov Autoregression package for OOS forecasting
+
+ *A custom extension of the statsmodels Markov Autoregression package for OOS forecasting*
 
 **COMPARISON OF PERFORMANCE IN PREDICTING U.S. UNEMPLOYMENT CLAIMS IN 'NORMAL' AND 'SHOCK' TIME PERIODS**
 
@@ -51,11 +52,11 @@ $ pip install -r requirements.txt
 
 ### Example Use on Federal Reserve Data
 
-- Recommend running as background processes that can be returned to later if running locally. Given the walk-forward validation method, significant training time is incurred
+- Recommend running train_model as background processes that can be returned to later if running locally. Given the walk-forward validation method, significant training time is incurred
 - Estimated runtime will vary by computer, but on an Intel(R) Core(TM) i5-6200U CPU @2.30GHz with 8.00 GB memory, searching up to lag_order=12 takes 1-2 hours
 
 ```shell
-$ nohup python /src/data/build_features.py > /logs/features_log.txt &
+$ python /src/data/build_features.py > /logs/features_log.txt
 $ nohup python /src/models/train_model.py > /logs/models_log.txt &
 ```
 
@@ -63,13 +64,19 @@ $ nohup python /src/models/train_model.py > /logs/models_log.txt &
 
 ## Results
 
+As noted at the start, the OOS MS-AR t+1 forecasts for U.S. unemployment claims perform comparably with an AR and exponential smoothing in normal periods, and outperforms in a recession. 
+
+We begin by transforming the data as suggested by the authors of the dataset to make it stationary https://research.stlouisfed.org/econ/mccracken/fred-databases/. The full dataset contains ~140 different series with corresponding strategies for transformation (differencing, logs, logs+differences, etc.). The data can be rougly categorized into different economic factors. For example, the housing variables contain many housing series:
+
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/markov_ar_specification.PNG?raw=true)
+
 - All the `code` required to get started
 - Images of what it should look like
 
 
 ---
 
-## License
+## Mathematical Approach
 
 - **[MIT license](http://opensource.org/licenses/mit-license.php)**
 <p><small>Project based on the <a target="_blank" href="https://drivendata.github.io/cookiecutter-data-science/">cookiecutter data science project template</a>. #cookiecutterdatascience</small></p>
