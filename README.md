@@ -68,7 +68,17 @@ As noted at the start, the OOS MS-AR t+1 forecasts for U.S. unemployment claims 
 
 We begin by transforming the data as suggested by the authors of the dataset to make it stationary https://research.stlouisfed.org/econ/mccracken/fred-databases/. The full dataset contains ~140 different series with corresponding strategies for transformation (differencing, logs, logs+differences, etc.). The data can be rougly categorized into different economic factors. For example, the housing variables contain many housing series:
 
-![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/markov_ar_specification.PNG?raw=true)
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/time_series_transformed_housing.png?raw=true)
+
+
+The grouped nature of the variables can also be seen in a visual examination of the correlation matrix (again post-stationarizing):
+
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/correlation_matrix_2.png?raw=true)
+
+
+Isolating the chosen variable of interest, unemployment claims:
+
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/correlation_matrix_2.png?raw=true)
 
 - All the `code` required to get started
 - Images of what it should look like
