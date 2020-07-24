@@ -61,6 +61,24 @@ $ nohup python /src/models/train_model.py > /logs/models_log.txt &
 ```
 
 ---
+## Mathematical Approach
+
+The extension follows the approach taken in statsmodels, i.e. the model is an autoregression with where the coefficients, the mean of the process (possibly including trend or regression effects) and the variance of the error term may be switching across regimes
+- A detailed discussion of Markov ARs can be found in Hamilton's original paper
+- Additional detail on MS-AR forecasting <a target="_blank" href="https://warwick.ac.uk/fac/soc/economics/research/workingpapers/1995-1998/twerp489.pdf/">here</a>, which also follows Hamilton
+
+
+**Model Forecast Specification**
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/math.PNG?raw=true)
+
+The parameters needed to calculate this are available in memory in statsmodel in the fitted MS-AR model. The extension takes in the fitted model, and accesses the learned parameters as follows:
+
+1. For each regime, calculate the t+1 forecast using the AR coefficients and the lags of the data available to the user at time t (e.g., t-1, t-2... etc.)
+2. Fill out the learned Markov transition matrix so that the probabilities for any regime k sum to 1.0 (this is simply bookeeping to ease the later calculations)
+3. Pull up the filtered probabilities of which regime the user (time=t) is currently in when making the forecast
+4. Using the transition matrix and the filtered probabilities, calculate the probabilities of which regime the user will be in in time t+1 (one step in the Markov chain)
+5. Weight the forecasts calculated in (1) by the new probabilities, and sum
+---
 
 ## Results
 
@@ -106,16 +124,5 @@ A 3rd order Markov model is used as well.
 
 ---
 
-## Mathematical Approach
-
-The extension follows the approach taken in statsmodels, i.e. the model is an autoregression with where the coefficients, the mean of the process (possibly including trend or regression effects) and the variance of the error term may be switching across regimes
-- A detailed discussion of Markov ARs can be found in Hamilton's original paper
-- Additional detail on MS-AR forecasting <a target="_blank" href="https://warwick.ac.uk/fac/soc/economics/research/workingpapers/1995-1998/twerp489.pdf/">here</a>, which also follows Hamilton
-
-
-**Model Forecast Specification**
-![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/math.PNG?raw=true)
-
-The parameters needed to calculate this a
 
 <p><small>Project based on the <a target="_blank" href="https://drivendata.github.io/cookiecutter-data-science/">cookiecutter data science project template</a>. #cookiecutterdatascience</small></p> 
