@@ -78,9 +78,21 @@ The below graph isolates the chosen variable of interest, unemployment claims. T
 
 A visual examination of the lag structure using an ACF plot:
 ![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/acf_plot.png?raw=true)
-
  
-**Model Results**
+
+### **Cross-Model Comparison in Various Regimes / Time Periods**
+
+- Using the optimal hyperparameters (lags) selected above, the below graph shows the MSE of the OOS forecasts
+- The MS-AR extension performs comparably with the other univariate statsmodels OOS methods
+- It outperforms in the non-dominant regime, consistent with literature
+
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/error_summary.png?raw=true)
+
+The t+1 forecasts plotted with the actuals show the improved ability to model the more extreme values in '08:
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/yhat_y_Classical.png?raw=true)
+
+
+**Detail on Lag Selection/Parameter Tuning**
 
 The baseline models used are an autoregression and exponential smoothing. The mean squared error for the t+1 forecasts using walk-forward validation across various lag orders are:
 ![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/AR_errors.png?raw=true)
@@ -91,6 +103,7 @@ The MS-AR's mse for the same period (using the custom extension to allow for wal
 ![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/MKV_errors.png?raw=true)
 
 A 3rd order Markov model is used as well.
+
 ---
 
 ## Mathematical Approach
