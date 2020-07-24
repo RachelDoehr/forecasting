@@ -108,5 +108,13 @@ A 3rd order Markov model is used as well.
 
 ## Mathematical Approach
 
-- **[MIT license](http://opensource.org/licenses/mit-license.php)**
-<p><small>Project based on the <a target="_blank" href="https://drivendata.github.io/cookiecutter-data-science/">cookiecutter data science project template</a>. #cookiecutterdatascience</small></p>
+The extension follows the approach taken in statsmodels, i.e. the model is an autoregression with where the coefficients, the mean of the process (possibly including trend or regression effects) and the variance of the error term may be switching across regimes
+- A detailed discussion of Markov ARs can be found in Hamilton's original paper
+- Additional detail on MS-AR forecasting <a target="_blank" href="https://warwick.ac.uk/fac/soc/economics/research/workingpapers/1995-1998/twerp489.pdf/">here</a>, which also follows Hamilton
+
+
+**Model Forecast Specification**
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/math.png?raw=true)
+
+
+<p><small>Project based on the <a target="_blank" href="https://drivendata.github.io/cookiecutter-data-science/">cookiecutter data science project template</a>. #cookiecutterdatascience</small></p> 
