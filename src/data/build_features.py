@@ -170,9 +170,10 @@ class DatasetMaker():
     def plot_y_var(self):
 
         '''plotting dependent variable visually post and pre-transform'''
-        df = self.transformed_df.copy()
+        nobs = np.round(0.825*self.transformed_df.shape[0], 0)
+        df = self.transformed_df.copy().iloc[0:int(nobs), :]
         # graph
-        x =self.transformed_df.sasdate
+        x =df.sasdate
         
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
 

@@ -307,7 +307,7 @@ class ClassicalModels():
         df_error = pd.DataFrame(self.error_metrics_AR.items())
         
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
-        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=10)
+        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=30)
         # Decorations
         ax1.set_xlabel('Lag', fontsize=20)
         ax1.tick_params(axis='x', rotation=0, labelsize=12)
@@ -327,7 +327,7 @@ class ClassicalModels():
         df_error = pd.DataFrame(self.error_metrics_Markov.items())
         
         fig, ax1 = plt.subplots(1,1, figsize=(16,9), dpi= 80)
-        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=10)
+        plt.scatter(df_error.iloc[:, 0], df_error.iloc[:, 1], color='blue', s=30)
         
         # Decorations
         ax1.set_xlabel('Lag', fontsize=20)
