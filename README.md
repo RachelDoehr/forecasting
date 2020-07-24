@@ -114,7 +114,8 @@ The extension follows the approach taken in statsmodels, i.e. the model is an au
 
 
 **Model Forecast Specification**
-![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/math.png?raw=true)
+![Alt Text](https://github.com/RachelDoehr/forecasting/blob/master/reports/figures/math.PNG?raw=true)
 
+The parameters needed to calculate this a
 
 <p><small>Project based on the <a target="_blank" href="https://drivendata.github.io/cookiecutter-data-science/">cookiecutter data science project template</a>. #cookiecutterdatascience</small></p> 
