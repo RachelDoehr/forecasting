@@ -51,7 +51,7 @@ class DatasetMaker():
         null_counts =  pd.DataFrame(self.interim_df.isnull().sum(axis = 0))
         null_counts.columns = ['null_count']
         nulls = null_counts[null_counts.null_count > 0]
-        #print(nulls)
+        print(nulls)
 
         # ensure numeric
         self.interim_df.iloc[:, 1:].apply(pd.to_numeric)
